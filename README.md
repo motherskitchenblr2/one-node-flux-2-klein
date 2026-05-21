@@ -1,54 +1,47 @@
 # One Node · Flux-2 Klein
 
-A ComfyUI custom node that wraps the full Flux 2 Klein workflow into a single self-contained UI widget. No graph to build, no nodes to connect — just one node with everything inside.
+A ComfyUI custom node that wraps the full Flux 2 Klein workflow into a single self-contained UI widget. No graph to build, no spaghetti wires to connect, just one powerful node with everything inside.
 
-> If this saves you time, you can support the work here: [buymeacoffee.com/yanokusnir](https://buymeacoffee.com/yanokusnir)
+> *One Node to rule them all, One Node to find them,*
+> *One Node to bring them all, and in ComfyUI bind them.*
+>
+> *— J.R.R. Tolkien, probably, if he used ComfyUI*
 
 ---
 
 ## What it does
 
-The node has five modes, switchable with a single click:
+The node has 5 modes, switchable with a single click:
 
-**T2I** — text to image. Pick a resolution preset or set custom dimensions.
+**T2I** - standard text to image generation.
 
-**I2I** — image to image. Drop in an image, set the denoise strength, optionally resize by longer side before generation.
+**I2I** - good for creating variations or gently nudging an image in a different direction.
 
-**Edit** — this is where the node really shines. Load one or two reference images and describe what you want changed. The model edits the image while preserving the original structure, lighting, and composition. Has a built-in before/after comparer so you can see exactly what changed.
+**EDIT** - load one or two reference images and describe the change.
 
-**Paint** — three tools in one:
-- Sketch: a full canvas with layers, brushes, shapes, zoom, and a Remove Background button. Draw something and generate from it.
+**PAINT** - three tools in one:
+- Sketch: a full canvas with layers, brushes, shapes and more. Draw something and generate from it.
 - Inpaint: paint a mask over the area you want to change, write what should be there instead.
 - Outpaint: expand the image in any direction by dragging the edges.
 
-**Faceswap** — swap a face from a source image onto a target. Requires a Faceswap LoRA.
-
----
-
-## Other features
-
-- Gallery with favorites, lightbox, before/after compare, and "Load settings into UI" to restore any previous generation including the prompt, resolution, images, and LoRAs.
-- Prompt Discover panel with curated shortcuts for editing, relighting, style changes and more. Fully editable — add your own categories and prompts.
-- Up to 3 simultaneous LoRAs with automatic trigger word detection and custom trigger word overrides per LoRA.
-- Advanced control panel for steps, CFG, sampler, scheduler, and seed — hidden by default, enable it in Settings when you need it.
-- Metadata saved into every PNG and organized in a separate `metadata/` folder so your output folder stays clean.
-- Remove Background tool powered by BiRefNet, available inside the Sketch canvas.
-- Keyboard shortcuts: `Space` to generate, `G` gallery, `D` discover, `F` fullscreen, `Esc` to close any overlay.
+**FACESWAP** - swap a face from a source image onto a target. Requires a Faceswap LoRA.
 
 ---
 
 ## Installation
 
-You need one additional custom node:
-
-**ComfyUI-Inpaint-CropAndStitch** by lquesada — required for inpaint and outpaint modes.
-https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch
-
-Then clone this repo into your ComfyUI `custom_nodes` folder:
+Clone this repo into your ComfyUI `custom_nodes` folder:
 
 ```
 cd ComfyUI/custom_nodes
 git clone https://github.com/yanokusnir-ai/one-node-flux-2-klein.git
+```
+
+You need one additional custom node for inpaint and outpaint modes:
+[ComfyUI-Inpaint-CropAndStitch](https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch) by lquesada. Just clone it into the same folder:
+
+```
+git clone https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git
 ```
 
 Restart ComfyUI. The node appears as **One Node · Flux-2 Klein**.
@@ -57,9 +50,37 @@ Restart ComfyUI. The node appears as **One Node · Flux-2 Klein**.
 
 ## Models
 
-You will need a Flux 2 Klein diffusion model, a compatible text encoder, and the Flux 2 VAE. Links and setup instructions are in the Help overlay inside the node — click the **✦ Help** button after adding the node.
+This node works with any Flux 2 Klein model officially released by Black Forest Labs. GGUF versions are not currently supported.
 
-For Remove Background: a BiRefNet model placed in `models/background_removal/`.
+You will need a diffusion model, a text encoder, and the VAE. Download links below.
+
+**Diffusion models** (place in `models/diffusion_models/`)
+- [flux-2 klein 9b distilled](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/resolve/main/flux-2-klein-9b.safetensors) - requires access request on HuggingFace
+- [flux-2 klein 9b fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors) - requires access request on HuggingFace
+- [flux-2 klein 9b kv](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv/resolve/main/flux-2-klein-9b-kv.safetensors) - requires access request on HuggingFace
+- [flux-2 klein 9b kv fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv-fp8/resolve/main/flux-2-klein-9b-kv-fp8.safetensors) - requires access request on HuggingFace
+- [flux-2 klein 4b distilled](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/main/flux-2-klein-4b.safetensors)
+- [flux-2 klein 4b fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors)
+
+**Text encoder for 9b models** (place in `models/text_encoders/`)
+- [qwen_3_8b_fp8mixed](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors)
+- [qwen_3_8b_fp4mixed](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files/text_encoders/qwen_3_8b_fp4mixed.safetensors)
+
+**Text encoder for 4b model** (place in `models/text_encoders/`)
+- [qwen_3_4b](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors)
+- [qwen_3_4b_fp4](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors)
+
+**VAE** (place in `models/vae/`)
+- [flux2-vae](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files/vae/flux2-vae.safetensors)
+
+**Faceswap LoRA** (place in `models/loras/`)
+- [bfs head swap v1 (9b)](https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors)
+- [bfs head swap v1 (4b)](https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_4b.safetensors)
+
+**Remove Background** (place in `models/background_removal/`)
+
+The node includes a built-in Remove Background tool powered by BiRefNet. To use it, download:
+- [birefnet](https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors)
 
 ---
 
@@ -78,3 +99,5 @@ This node itself is fully open source with no restrictions.
 If you find this useful and want to support further development:
 
 [buymeacoffee.com/yanokusnir](https://buymeacoffee.com/yanokusnir)
+
+Thanks. Now go make something cool. :)
