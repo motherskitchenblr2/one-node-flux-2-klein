@@ -7,6 +7,14 @@ A ComfyUI custom node that wraps the full FLUX.2 [klein] workflow into a single 
 >
 > *— J.R.R. Tolkien, probably, if he used ComfyUI*
 
+![One Node · FLUX.2 [klein]](assets/one-node-flux-2-klein.gif)
+
+---
+
+## Tutorial
+
+[![Watch the tutorial](https://img.youtube.com/vi/L4ItbBWXqCo/maxresdefault.jpg)](https://youtu.be/L4ItbBWXqCo)
+
 ---
 
 ## What it does
@@ -88,3 +96,7 @@ If you find this useful and want to support further development:
 [buymeacoffee.com/yanokusnir](https://buymeacoffee.com/yanokusnir)
 
 Thanks. Now go make something cool. :)
+
+---
+
+Built with the help of [Claude](https://claude.ai) by Anthropic.
