@@ -17,6 +17,8 @@ A ComfyUI custom node that wraps the full FLUX.2 [klein] workflow into a single 
 
 ▶ [Watch on YouTube](https://youtu.be/L4ItbBWXqCo)
 
+The node has been updated since the tutorial was recorded - check the [Changelog](#changelog) for new features.
+
 ---
 
 ## What it does
@@ -110,12 +112,12 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 ### June 19, 2026
 
 **External loaders (GGUF support)**
-The node now has optional model, clip, and VAE input slots. Enable them in Settings under "External model/clip/vae inputs" and connect any loader you want — including GGUF. When a loader is connected, the corresponding dropdown in Settings is automatically dimmed.
+The node now has optional model, clip, and VAE input slots. Enable them in Settings under "External model/clip/vae inputs" and connect any loader you want - including GGUF. When a loader is connected, the corresponding dropdown in Settings is automatically dimmed.
 
 ![External loaders](assets/support_for_external_loaders.png)
 
 **Refresh models**
-Added a "↻ Refresh models" button in Settings and in the Add LoRA panel. No more restarting ComfyUI after adding new models or LoRAs to your ComfyUI directories — just hit the button.
+Added a "↻ Refresh models" button in Settings and in the Add LoRA panel. No more restarting ComfyUI after adding new models or LoRAs to your ComfyUI directories - just hit the button.
 
 **Tablet and pen support**
 The Sketch canvas now supports tablet input. Pen pressure controls brush size automatically.
