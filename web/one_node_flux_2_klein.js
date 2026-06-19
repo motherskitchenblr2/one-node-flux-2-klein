@@ -467,9 +467,11 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType,nodeData){
     if(nodeData.name!=="FluxKleinOneNode") return;
 
+
     nodeType.prototype.onNodeCreated=function(){
       this.color=C.bg0;this.bgcolor=C.bg0;this.resizable=false;
-      this.inputs=[];this.outputs=[];
+      this.outputs=[];
+      // Hide input labels but keep slots for connection detection
       if(this.widgets)this.widgets=[];
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
@@ -496,9 +498,14 @@ app.registerExtension({
       this._buildUI();
     };
 
-    nodeType.prototype.onResize=function(){this.size=[NODE_W,NODE_H];};
+    nodeType.prototype.onResize=function(){
+      const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
+      const n=(this.inputs||[]).length;
+      this.size=[NODE_W,NODE_H+n*slotH];
+    };
     nodeType.prototype.onDrawConnections=function(){};
     nodeType.prototype.getSlotMenuOptions=function(){return[];};
+
 
     nodeType.prototype._buildUI=function(){
       const self=this;
@@ -555,6 +562,7 @@ app.registerExtension({
           _pendingMeta: null,
           _preRunFiles: new Set(),
           soundEnabled: saved.soundEnabled!==undefined?saved.soundEnabled:true,
+          extLoaders:   saved.extLoaders||false,
           previewUrl:   null,
         };
       }
@@ -583,7 +591,7 @@ app.registerExtension({
           prompt:S.prompt, promptT2i:S.promptT2i, promptEdit:S.promptEdit,
           promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
-          userLoras:S.userLoras, soundEnabled,
+          userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
         });
       };
 
@@ -744,8 +752,9 @@ app.registerExtension({
       });
 
       const titleH=(typeof LiteGraph!=="undefined"&&LiteGraph.NODE_TITLE_HEIGHT)||30;
+      const _uiH=NODE_H-titleH-4;
       const scrollEl=mk("div",{
-        width:"100%",height:(NODE_H-titleH-4)+"px",
+        width:"100%",height:_uiH+"px",
         overflowY:"hidden",overflowX:"hidden",boxSizing:"border-box",
       });
       scrollEl.addEventListener("wheel",e=>{
@@ -759,7 +768,7 @@ app.registerExtension({
 
       const pad=mk("div",{padding:"12px",display:"flex",flexDirection:"column",
         gap:"10px",boxSizing:"border-box",width:"100%",
-        height:(NODE_H-titleH-4)+"px"});
+        height:_uiH+"px"});
 
       // ── SETTINGS OVERLAY ──────────────────────────────────────────────────
       const settingsOverlay=mk("div",{
@@ -781,7 +790,16 @@ app.registerExtension({
       tx(settClose,"✕  Close");
       settClose.onmouseenter=()=>settClose.style.opacity=".7";
       settClose.onmouseleave=()=>settClose.style.opacity="1";
-      settHdr.append(settTitle,settClose);
+      const settRefresh=mk("button",{background:"transparent",border:`1px solid ${C.border}`,
+        borderRadius:"6px",padding:"4px 14px",fontSize:"11px",color:C.muted,
+        cursor:"pointer",outline:"none",transition:"opacity .15s",marginRight:"8px"});
+      tx(settRefresh,"↻  Refresh models");
+      settRefresh.onmouseenter=()=>settRefresh.style.opacity=".7";
+      settRefresh.onmouseleave=()=>settRefresh.style.opacity="1";
+      settRefresh.onclick=()=>{ tx(settRefresh,"↻  Refreshing…"); _loadModels().then(()=>tx(settRefresh,"↻  Refresh models")); };
+      const settBtnRow=mk("div",{display:"flex",alignItems:"center",gap:"0"});
+      settBtnRow.append(settRefresh,settClose);
+      settHdr.append(settTitle,settBtnRow);
 
 
       // ── Model dropdowns ───────────────────────────────────────────────────
@@ -905,7 +923,44 @@ app.registerExtension({
       const soundToggle=Toggle("Notification sound on complete",soundEnabled,v=>{soundEnabled=v;persist();});
       const advUIToggle=Toggle("Advanced control (steps, CFG, sampler…)",S.advancedUI,v=>{S.advancedUI=v;persist();_advRefresh();},"#6450b4");
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,prefTitle,soundToggle.el,advUIToggle.el);
+      const _slotH=LiteGraph.NODE_SLOT_HEIGHT||20;
+      const _extInputNames=["model","clip","vae"];
+      const _extInputColors=["#b39ddb","#80cbc4","#ef9a9a"];
+
+      const _applyExtLoaders=(enabled)=>{
+        const node=app.graph.getNodeById(self.id)||self;
+        if(!node) return;
+        if(enabled){
+          const existing=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name));
+          if(existing.length===0){
+            _extInputNames.forEach((name,i)=>{
+              const type=i===0?"MODEL":i===1?"CLIP":"VAE";
+              node.addInput(name,type);
+              const slot=node.inputs[node.inputs.length-1];
+              if(slot) slot.color_on=_extInputColors[i];
+            });
+          }
+          const n=(node.inputs||[]).length;
+          node.size=[NODE_W, NODE_H+n*_slotH];
+          node.setDirtyCanvas(true,true);
+        } else {
+          if(node.inputs&&node.inputs.length>0){
+            for(let i=node.inputs.length-1;i>=0;i--){
+              if(_extInputNames.includes(node.inputs[i].name)) node.removeInput(i);
+            }
+          }
+          node.size=[NODE_W, NODE_H];
+          node.setDirtyCanvas(true,true);
+        }
+      };
+
+      const extLoadersToggle=Toggle("External model/clip/vae inputs (for GGUF etc.)",S.extLoaders||false,v=>{
+        S.extLoaders=v;persist();
+        _applyExtLoaders(v);
+        _refreshExtInputUI();
+      });
+
+      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el);
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -1125,7 +1180,23 @@ app.registerExtension({
       settingsBtn.append(settGear,settLblEl);
       settingsBtn.onmouseenter=()=>{settingsBtn.style.borderColor=C.text;settingsBtn.style.color=C.text;settGear.style.transform="rotate(30deg)";};
       settingsBtn.onmouseleave=()=>{settingsBtn.style.borderColor=C.borderH;settingsBtn.style.color=C.muted;settGear.style.transform="";};
-      settingsBtn.onclick=e=>{e.stopPropagation();openOverlay(settingsOverlay);};
+      const _refreshExtInputUI=()=>{
+        const n=app.graph.getNodeById(self.id);
+        const isConn=(name)=>{
+          if(!n||!n.inputs) return false;
+          const slot=n.inputs.find(i=>i.name===name);
+          return slot&&slot.link!=null;
+        };
+        const dim=(wrap,connected)=>{
+          wrap.style.opacity=connected?"0.4":"1";
+          wrap.style.pointerEvents=connected?"none":"";
+          wrap.title=connected?"Connected externally — disconnect to use dropdown":"";
+        };
+        dim(modelF.wrap,isConn("model"));
+        dim(teF.wrap,  isConn("clip"));
+        dim(vaeF.wrap, isConn("vae"));
+      };
+      settingsBtn.onclick=e=>{e.stopPropagation();_refreshExtInputUI();openOverlay(settingsOverlay);};
       settClose.onclick=()=>closeOverlayFade(settingsOverlay);
 
       // Fullscreen node button
@@ -1192,8 +1263,7 @@ app.registerExtension({
         root.style.borderRadius="";root.style.overflow="hidden";
         root.style.transform="";root.style.transformOrigin="";root.style.margin="";
         root.style.top="";root.style.left="";
-        const titleH=(typeof LiteGraph!=="undefined"&&LiteGraph.NODE_TITLE_HEIGHT)||30;
-        scrollEl.style.height=(NODE_H-titleH-4)+"px";
+        scrollEl.style.height=_uiH+"px";
         if(_fsNodeOverlay._scWrap) _fsNodeOverlay._scWrap.remove();
         _fsNodeOverlay._scWrap=null;
         _fsNodeOverlay.style.display="none";
@@ -3016,22 +3086,22 @@ app.registerExtension({
         }
       });
       // Document-level pan move+up so panning continues outside viewport
-      document.addEventListener("mousemove",e=>{
+      document.addEventListener("pointermove",e=>{
         if(_sketchOv.style.display==="none") return;
         _sketchUpdateCursorFromClient(e.clientX,e.clientY);
         if(_sketchPanning){
           _sketchPanX=_sketchPanOX+(e.clientX-_sketchPanStartX);
           _sketchPanY=_sketchPanOY+(e.clientY-_sketchPanStartY);
           _sketchApplyTransform();
-          _sketchLastX=NaN;_sketchLastY=NaN; // invalidate so brush doesn't jump after pan
+          _sketchLastX=NaN;_sketchLastY=NaN;
           return;
         }
-        // Continue scale/move drag even when mouse leaves viewport
         if(_sketchDrawing&&(_skScaling||_sketchTool==="move")){
+          _sketchPressure=(e.pressure&&e.pressure>0)?e.pressure:1;
           _sketchVpMove(e);
         }
       });
-      document.addEventListener("mouseup",e=>{
+      document.addEventListener("pointerup",e=>{
         if(_sketchOv.style.display==="none") return;
         if(_sketchPanning){
           _sketchPanning=false;
@@ -3540,8 +3610,9 @@ app.registerExtension({
       };
 
       // ── Core draw primitive — brush or eraser on layer canvas ────────────
+      let _sketchPressure=1;
       const _skApplyDot=(layer,x,y)=>{
-        const r=_sketchSize/2;
+        const r=(_sketchSize/2)*(_sketchPressure>0?_sketchPressure:1);
         if(_sketchTool==="eraser"){
           _skSoftDot(layer.ctx,x,y,r,_sketchSoftness,"rgba(0,0,0,1)","destination-out");
         } else {
@@ -3775,7 +3846,11 @@ app.registerExtension({
       // Shape space-drag: while drawing a shape with Space held, move the start point
       let _sketchShapeSpaceLastVx=0,_sketchShapeSpaceLastVy=0;
 
-      _sketchViewport.addEventListener("mousedown",_sketchVpDown);
+      _sketchViewport.addEventListener("pointerdown",e=>{
+        if(e.pointerType==="pen"||e.pointerType==="touch") _sketchViewport.setPointerCapture(e.pointerId);
+        _sketchPressure=(e.pressure&&e.pressure>0)?e.pressure:1;
+        _sketchVpDown(e);
+      });
       // Track raw client position for smooth cursor — updated on any mousemove anywhere in sketch
       const _sketchUpdateCursorFromClient=(clientX,clientY)=>{
         const r=_sketchViewport.getBoundingClientRect();
@@ -3792,18 +3867,19 @@ app.registerExtension({
         }
       };
 
-      _sketchViewport.addEventListener("mousemove",e=>{
+      _sketchViewport.addEventListener("pointermove",e=>{
+        _sketchPressure=(e.pressure&&e.pressure>0)?e.pressure:1;
         _sketchUpdateCursorFromClient(e.clientX,e.clientY);
         if(_sketchPanning) return;
         _sketchVpMove(e);
       });
-      _sketchViewport.addEventListener("mouseup",_sketchVpUp);
-      _sketchViewport.addEventListener("mouseleave",()=>{
+      _sketchViewport.addEventListener("pointerup",_sketchVpUp);
+      _sketchViewport.addEventListener("pointerleave",()=>{
         _sketchCursorEl.style.display="none";
         if(!_sketchPanning&&_sketchTool!=="move") _sketchDrawing=false;
       });
       // On re-enter: resync last brush position so no jump/offset occurs
-      _sketchViewport.addEventListener("mouseenter",e=>{
+      _sketchViewport.addEventListener("pointerenter",e=>{
         if(!_sketchDrawing) return;
         if(_sketchTool==="brush"||_sketchTool==="eraser"){
           const {vx,vy}=_sketchVpPos(e);
@@ -6022,7 +6098,14 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulPClose.onmouseleave=()=>_ulPClose.style.color=C.muted;
       _ulPClose.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
       _ulBg.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
-      _ulPHdr.append(_ulPTitle,_ulPClose);
+      const _ulRefreshBtn=mk("button",{background:"none",border:"none",cursor:"pointer",
+        color:C.muted,fontSize:"13px",lineHeight:"1",padding:"0 6px 0 0",outline:"none",flexShrink:"0"});
+      tx(_ulRefreshBtn,"↻");
+      _ulRefreshBtn.title="Refresh model list";
+      _ulRefreshBtn.onmouseenter=()=>_ulRefreshBtn.style.color="#fff";
+      _ulRefreshBtn.onmouseleave=()=>_ulRefreshBtn.style.color=C.muted;
+      _ulRefreshBtn.onclick=()=>{ tx(_ulRefreshBtn,"↻"); _loadModels(); };
+      _ulPHdr.append(_ulPTitle,_ulRefreshBtn,_ulPClose);
       const _ulPSub=mk("div",{width:"100%",height:"1px",background:"rgba(240,255,65,.10)",marginTop:"-6px"});
       const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px"});
 
@@ -7358,6 +7441,42 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         const useKV=(S.model||"").toLowerCase().includes("kv");
 
+        // ── External model/clip/vae input detection ─────────────────────────
+        // If the node has optional inputs wired from outside (e.g. a GGUF loader),
+        // skip internal loaders and use the external node's output instead.
+        // The external node is serialized and added to the prompt so ComfyUI can find it.
+        const _selfNode=app.graph.getNodeById(self.id);
+        const _extSlot=(name)=>{
+          if(!_selfNode) return null;
+          const inputs=_selfNode.inputs||[];
+          const slot=inputs.find(i=>i.name===name);
+          if(!slot||slot.link==null) return null;
+          const link=app.graph.links[slot.link];
+          if(!link) return null;
+          // Serialize the external node and all its upstream dependencies into prompt
+          const _addNodeToPrompt=(nodeId)=>{
+            if(prompt[String(nodeId)]) return; // already added
+            const extNode=app.graph.getNodeById(nodeId);
+            if(!extNode) return;
+            const serialized={class_type:extNode.comfyClass||extNode.type,inputs:{},_meta:{title:extNode.title||extNode.type}};
+            // Add widget values as inputs
+            (extNode.widgets||[]).forEach(w=>{ if(w.name) serialized.inputs[w.name]=w.value; });
+            // Add connected inputs
+            (extNode.inputs||[]).forEach((inp,i)=>{
+              if(inp.link!=null){
+                const l=app.graph.links[inp.link];
+                if(l){ _addNodeToPrompt(l.origin_id); serialized.inputs[inp.name]=[String(l.origin_id),l.origin_slot||0]; }
+              }
+            });
+            prompt[String(nodeId)]=serialized;
+          };
+          _addNodeToPrompt(link.origin_id);
+          return [String(link.origin_id),link.origin_slot||0];
+        };
+        const extModel=_extSlot("model");
+        const extClip =_extSlot("clip");
+        const extVae  =_extSlot("vae");
+
         // ── LoRA chain helper ───────────────────────────────────────────────
         const _applyLoRAs=(chainSrc,idPrefix)=>{
           const toPrev=(p)=>typeof p==="string"?[p,0]:p;
@@ -7383,9 +7502,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             loadImg:"FKI:198", loadMask:"FKI:199",
             crop:"FKI:209", sampler:"FKI:163", save:"FKI:203",
           };
-          set(WFI.model,   "unet_name",  S.model||"flux-2-klein-9b-kv.safetensors");
-          set(WFI.textEnc, "clip_name",  S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          set(WFI.vae,     "vae_name",   S.vae||"flux2-vae.safetensors");
+          if(extModel){ delete prompt[WFI.model]; if(useKV) prompt[WFI.kv].inputs.model=extModel; }
+          else set(WFI.model,"unet_name",S.model||"flux-2-klein-9b-kv.safetensors");
+          if(extClip){ delete prompt[WFI.textEnc]; prompt[WFI.promptPos].inputs.clip=extClip; prompt[WFI.promptNeg].inputs.clip=extClip; }
+          else set(WFI.textEnc,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){ delete prompt[WFI.vae]; prompt["FKI:206"].inputs.vae=extVae; prompt["FKI:210"].inputs.vae=extVae; prompt["FKI:164"].inputs.vae=extVae; }
+          else set(WFI.vae,"vae_name",S.vae||"flux2-vae.safetensors");
           set(WFI.promptPos,"text",      _effectivePrompt);
           set(WFI.loadImg,  "image",     _paintSlot.name||"example.png");
           set(WFI.loadMask, "image",     _maskName||"example_mask.png");
@@ -7414,13 +7536,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
           // KV cache: inpaint workflow already has FKI:216 FluxKVCache wired.
           // If KV not selected, bypass it by wiring UNETLoader directly to KSampler model chain.
-          if(!useKV){
-            // Remove KV node, rewire LoRAs / KSampler to use UNETLoader directly
-            delete prompt[WFI.kv];
-          }
+          if(extModel&&useKV){ prompt[WFI.kv].inputs.model=extModel; }
+          if(!useKV){ delete prompt[WFI.kv]; }
 
           // LoRA chain: inject between UNETLoader (or KV) and KSampler
-          const inpaintModelSrc=useKV?WFI.kv:WFI.model;
+          const inpaintModelSrc=extModel?(useKV?WFI.kv:extModel):(useKV?WFI.kv:WFI.model);
           const inpaintFinalRef=_applyLoRAs(inpaintModelSrc,"FKI:");
           set(WFI.sampler,"model",typeof inpaintFinalRef==="string"?[inpaintFinalRef,0]:inpaintFinalRef);
 
@@ -7474,9 +7594,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             loadImg:"FKO:198", loadMask:"FKO:maskload",
             sampler:"FKO:163", save:"FKO:203",
           };
-          set(WFO.model,    "unet_name",  S.model||"flux-2-klein-9b-kv.safetensors");
-          set(WFO.textEnc,  "clip_name",  S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          set(WFO.vae,      "vae_name",   S.vae||"flux2-vae.safetensors");
+          if(extModel){ delete prompt[WFO.model]; if(useKV) prompt[WFO.kv].inputs.model=extModel; }
+          else set(WFO.model,"unet_name",S.model||"flux-2-klein-9b-kv.safetensors");
+          if(extClip){ delete prompt[WFO.textEnc]; prompt[WFO.promptPos].inputs.clip=extClip; }
+          else set(WFO.textEnc,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){ delete prompt[WFO.vae]; prompt["FKO:210"].inputs.vae=extVae; prompt["FKO:164"].inputs.vae=extVae; }
+          else set(WFO.vae,"vae_name",S.vae||"flux2-vae.safetensors");
           set(WFO.promptPos,"text",       _effectivePrompt);
           // _paintSlot.name now holds the pre-padded image uploaded by Confirm Changes
           set(WFO.loadImg,  "image",      _paintSlot.name||"example.png");
@@ -7505,8 +7628,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             prompt["FKO:210"].inputs.pixels=["FKO:scaleImg",0];
           }
 
+          if(extModel&&useKV){ prompt[WFO.kv].inputs.model=extModel; }
           if(!useKV) delete prompt[WFO.kv];
-          const opModelSrc=useKV?WFO.kv:WFO.model;
+          const opModelSrc=extModel?(useKV?WFO.kv:extModel):(useKV?WFO.kv:WFO.model);
           const opFinalRef=_applyLoRAs(opModelSrc,"FKO:");
           set(WFO.sampler,"model",typeof opFinalRef==="string"?[opFinalRef,0]:opFinalRef);
 
@@ -7517,9 +7641,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             target:"FKF:234", source:"FKF:236",
             sampling:"FKF:239", sampler:"FKF:228", save:"FKF:232",
           };
-          set(WFF.model,  "unet_name",      S.model||"flux-2-klein-9b.safetensors");
-          set(WFF.textEnc,"clip_name",      S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          set(WFF.vae,    "vae_name",       S.vae||"flux2-vae.safetensors");
+          if(extModel){ delete prompt[WFF.model]; prompt[WFF.lora].inputs.model=extModel; }
+          else set(WFF.model,"unet_name",S.model||"flux-2-klein-9b.safetensors");
+          if(extClip){ delete prompt[WFF.textEnc]; prompt["FKF:227"].inputs.clip=extClip; prompt["FKF:229"].inputs.clip=extClip; }
+          else set(WFF.textEnc,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){ delete prompt[WFF.vae]; prompt["FKF:171t"].inputs.vae=extVae; prompt["FKF:174s"].inputs.vae=extVae; prompt["FKF:224"].inputs.vae=extVae; }
+          else set(WFF.vae,"vae_name",S.vae||"flux2-vae.safetensors");
           set(WFF.target, "image",          S.fsTarget||"placeholder.png");
           set(WFF.source, "image",          S.fsSource||"placeholder.png");
 
@@ -7564,9 +7691,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         } else if(isI2IMode){
           // ── I2I workflow patching ──────────────────────────────────────────
-          set("FK:165","unet_name",  S.model||"flux-2-klein-9b.safetensors");
-          set("FK:155","clip_name",  S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          set("FK:153","vae_name",   S.vae||"flux2-vae.safetensors");
+          if(extModel){ delete prompt["FK:165"]; }
+          else set("FK:165","unet_name",S.model||"flux-2-klein-9b.safetensors");
+          if(extClip){ delete prompt["FK:155"]; prompt["FK:166"].inputs.clip=extClip; prompt["FK:156"].inputs.clip=extClip; }
+          else set("FK:155","clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){ delete prompt["FK:153"]; prompt["FKI2I:vae"].inputs.vae=extVae; prompt["FK:152"].inputs.vae=extVae; }
+          else set("FK:153","vae_name",S.vae||"flux2-vae.safetensors");
           set("FK:166","text",       _effectivePrompt);
           set("FKI2I:img","image",   S.i2iImage||"placeholder.png");
           set("FK:86","filename_prefix","one-node-flux-2-klein/FK");
@@ -7588,9 +7718,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           }
 
           // KV + LoRA chain → ModelSamplingAuraFlow → KSampler
-          let i2iModelSrc="FK:165";
+          let i2iModelSrc=extModel||"FK:165";
           if(useKV){
-            prompt["FK:KV"]={class_type:"FluxKVCache",inputs:{model:["FK:165",0]},_meta:{title:"Flux KV Cache"}};
+            prompt["FK:KV"]={class_type:"FluxKVCache",inputs:{model:extModel||["FK:165",0]},_meta:{title:"Flux KV Cache"}};
             i2iModelSrc="FK:KV";
           }
           const i2iLoraRef=_applyLoRAs(i2iModelSrc,"FK:");
@@ -7604,15 +7734,18 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         } else {
           // ── T2I / EDIT / SKETCH: original model chain ─────────────────────
-          set(WF.model,   "unet_name",  S.model||"flux-2-klein-9b.safetensors");
-          set(WF.textEnc, "clip_name",  S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          set(WF.vae,     "vae_name",   S.vae||"flux2-vae.safetensors");
+          if(extModel){ delete prompt[WF.model]; }
+          else set(WF.model,"unet_name",S.model||"flux-2-klein-9b.safetensors");
+          if(extClip){ delete prompt[WF.textEnc]; prompt[WF.promptPos].inputs.clip=extClip; prompt[WF.promptNeg].inputs.clip=extClip; }
+          else set(WF.textEnc,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){ delete prompt[WF.vae]; if(prompt["FK:132"]) prompt["FK:132"].inputs.vae=extVae; if(prompt["FK:232"]) prompt["FK:232"].inputs.vae=extVae; prompt["FK:152"].inputs.vae=extVae; }
+          else set(WF.vae,"vae_name",S.vae||"flux2-vae.safetensors");
 
           // Build chain: UNETLoader → (KV?) → (LoRAs?) → ModelSamplingAuraFlow
-          let modelSrc=WF.model;
+          let modelSrc=extModel||WF.model;
           if(useKV){
             prompt["FK:KV"]={
-              inputs:{model:[WF.model,0]},
+              inputs:{model:extModel||[WF.model,0]},
               class_type:"FluxKVCache",
               _meta:{title:"Flux KV Cache"},
             };
@@ -8185,18 +8318,18 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       lbArrowL.onclick=()=>_lbNav(_lbIdx-1);
       lbArrowR.onclick=()=>_lbNav(_lbIdx+1);
 
-      // Keyboard handler for lightbox — on document, guarded by lightbox visibility
+      // Keyboard handler for lightbox — capture phase so we beat ComfyUI canvas handlers
       document.addEventListener("keydown",(e)=>{
         if(lightbox.style.display!=="flex") return;
         if(e.key==="Escape"){ e.preventDefault(); e._lbHandled=true; _lbClose(); return; }
-        if(e.key==="ArrowLeft"){ e.preventDefault(); _lbNav(_lbIdx-1); return; }
-        if(e.key==="ArrowRight"){ e.preventDefault(); _lbNav(_lbIdx+1); return; }
+        if(e.key==="ArrowLeft"){ e.preventDefault(); e.stopPropagation(); _lbNav(_lbIdx-1); return; }
+        if(e.key==="ArrowRight"){ e.preventDefault(); e.stopPropagation(); _lbNav(_lbIdx+1); return; }
         if(e.key==="f"||e.key==="F"){
           e.preventDefault();
           if(!document.fullscreenElement) lbImg.requestFullscreen().catch(()=>{});
           else document.exitFullscreen().catch(()=>{});
         }
-      });
+      },{capture:true});
 
       // Open lightbox
       const lbShow=async(v,idx)=>{
@@ -8825,8 +8958,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
 
       // Fetch models
-
-      api.fetchApi("/flux_klein/models")
+      const _loadModels=()=>api.fetchApi("/flux_klein/models")
         .then(r=>r.json())
         .then(d=>{
           const _norm=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
@@ -8890,12 +9022,18 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           persist();
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
+      _loadModels();
+      if(S.extLoaders) _applyExtLoaders(true);
 
+      // Auto-refresh Settings dropdowns when connections change
+      self.onConnectionsChange=function(){ _refreshExtInputUI(); };
+
+      const _slotHInit=(self.inputs||[]).length*(LiteGraph.NODE_SLOT_HEIGHT||20);
       this.addDOMWidget("fk_ui","div",root,{
         getValue(){return null;},setValue(){},serialize:false,
         computeSize(){return[NODE_W,NODE_H];},
       });
-      this.setSize([NODE_W,NODE_H]);
+      this.setSize([NODE_W,NODE_H+_slotHInit]);
 
       // Nodes 2.0: hide the auto-injected node-type name badge rendered in the node footer.
       // The badge has class "bg-node-component-surface" (Tailwind) and contains the node type string.

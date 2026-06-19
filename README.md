@@ -59,7 +59,7 @@ Restart ComfyUI. The node appears as **One Node · FLUX.2 [klein]**.
 
 ## Models
 
-This node works with any FLUX.2 [klein] model officially released by Black Forest Labs. GGUF versions are not currently supported.
+This node works with any FLUX.2 [klein] model officially released by Black Forest Labs.
 
 You will find all officially released FLUX.2 [klein] models on the [Black Forest Labs HuggingFace page](https://huggingface.co/collections/black-forest-labs/flux2). Pick the variant that fits your VRAM and use case. You will need a diffusion model, a matching text encoder, and the VAE.
 
@@ -102,3 +102,26 @@ Thanks. Now go make something cool. :)
 ---
 
 Built with the help of [Claude](https://claude.ai) by Anthropic.
+
+---
+
+## Changelog
+
+### June 19, 2026
+
+**External loaders (GGUF support)**
+The node now has optional model, clip, and VAE input slots. Enable them in Settings under "External model/clip/vae inputs" and connect any loader you want — including GGUF. When a loader is connected, the corresponding dropdown in Settings is automatically dimmed.
+
+![External loaders](assets/support_for_external_loaders.png)
+
+**Refresh models**
+Added a "↻ Refresh models" button in Settings and in the Add LoRA panel. No more restarting ComfyUI after adding new models or LoRAs to your ComfyUI directories — just hit the button.
+
+**Tablet and pen support**
+The Sketch canvas now supports tablet input. Pen pressure controls brush size automatically.
+
+---
+
+### June 18, 2026
+
+Initial release.
