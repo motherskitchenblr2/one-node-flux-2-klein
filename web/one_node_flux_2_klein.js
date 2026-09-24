@@ -2,11 +2,14 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const LIME = "#f0ff41";
+// High-contrast palette. Lifted from the original darker greys because users
+// reported labels/borders fading into the dark background (muted/border/dim were
+// too dark). Original values are noted in memory (project_flux_color_palette).
 const C = {
-  lime:LIME, bg0:"#0b0b0b", bg1:"#111111", bg2:"#181818",
-  bg3:"#222222", border:"#2a2a2a", borderH:"#3c3c3c",
-  text:"#dedede", muted:"#565656", dim:"#2e2e2e",
-  warn:"#ffb347", err:"#ff6767",
+  lime:LIME, bg0:"#080808", bg1:"#101010", bg2:"#1c1c1c",
+  bg3:"#2a2a2a", border:"#4c4c4c", borderH:"#5f5f5f",
+  text:"#ffffff", muted:"#b0b0b0", dim:"#4a4a4a",
+  warn:"#ffc266", err:"#ff8080",
 };
 
 const NODE_W = 980;
@@ -123,7 +126,9 @@ function Toggle(labelTxt,checked,onChange,activeColor){
 }
 
 // ── Dropdown ──────────────────────────────────────────────────────────────────
-function DD(items,selected,onChange){
+// preferDown: open the panel below the trigger when there's room. The default prefers ABOVE
+// (most dropdowns here sit low in the panel); pass true where opening upward looks wrong.
+function DD(items,selected,onChange,preferDown){
   let val=selected;
   const wrap=mk("div",{position:"relative",width:"100%",minWidth:"0",overflow:"hidden"});
   const trig=mk("div",{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:"7px",
@@ -164,7 +169,13 @@ function DD(items,selected,onChange){
     panel.style.left=rect.left+"px";
     panel.style.width=Math.max(rect.width,140)+"px";
     const ph=Math.min(items.length*28+44,220);
-    panel.style.top=(rect.top-ph-4>8?rect.top-ph-4:rect.bottom+4)+"px";
+    if(preferDown){
+      // Below unless it would run off the bottom of the viewport.
+      const fitsBelow=rect.bottom+4+ph<=window.innerHeight-8;
+      panel.style.top=(fitsBelow?rect.bottom+4:Math.max(8,rect.top-ph-4))+"px";
+    } else {
+      panel.style.top=(rect.top-ph-4>8?rect.top-ph-4:rect.bottom+4)+"px";
+    }
   };
   const open=()=>{
     document.body.appendChild(panel);panel.style.display="flex";
@@ -210,6 +221,10 @@ function Pill(txt,active,onClick){
   return b;
 }
 
+// Parse a float that may use a comma as the decimal separator (common on EU
+// locales, where parseFloat("0,5") returns 0). Returns NaN for empty/invalid.
+function _pf(v){ return parseFloat(String(v).replace(",",".")); }
+
 // ── Number input ──────────────────────────────────────────────────────────────
 function NI(_label,val,min,max,_step,onChange,width="72px"){
   const wrap=mk("div",{
@@ -221,15 +236,15 @@ function NI(_label,val,min,max,_step,onChange,width="72px"){
     flex:"1 1 0",minWidth:"0",background:"transparent",border:"none",outline:"none",
     color:C.text,fontSize:"11px",padding:"0",textAlign:"left",
   },{type:"number",min:String(min),max:String(max),value:String(val)});
-  inp.oninput=()=>{ const v=Math.max(min,Math.min(max,parseFloat(inp.value)||min)); onChange(v); };
+  inp.oninput=()=>{ const v=Math.max(min,Math.min(max,_pf(inp.value)||min)); onChange(v); };
   inp.onfocus=()=>{ inp.select(); wrap.style.borderColor=LIME; };
-  inp.onblur=()=>{ inp.value=String(Math.max(min,Math.min(max,parseFloat(inp.value)||min))); wrap.style.borderColor=C.border; };
+  inp.onblur=()=>{ inp.value=String(Math.max(min,Math.min(max,_pf(inp.value)||min))); wrap.style.borderColor=C.border; };
   inp.addEventListener("keydown",e=>{
     if(e.key==="Enter"){ inp.blur(); return; }
     if(e.key==="ArrowUp"||e.key==="ArrowDown"){
       e.preventDefault();
       const step=wrap._arrowStep||8;
-      const cur=Math.max(min,Math.min(max,parseFloat(inp.value)||min));
+      const cur=Math.max(min,Math.min(max,_pf(inp.value)||min));
       const next=e.key==="ArrowUp"
         ? Math.min(max, Math.round((cur+step)/step)*step)
         : Math.max(min, Math.round((cur-step)/step)*step);
@@ -241,7 +256,7 @@ function NI(_label,val,min,max,_step,onChange,width="72px"){
   wrap.onclick=()=>inp.focus();
   wrap._inp=inp;
   wrap.setVal=(v)=>{inp.value=String(v);};
-  Object.defineProperty(wrap,"numVal",{get(){return parseFloat(inp.value)||min;}});
+  Object.defineProperty(wrap,"numVal",{get(){return _pf(inp.value)||min;}});
   return wrap;
 }
 
@@ -407,6 +422,7 @@ function ImgSlot(optional, onFile, onDims){
     hasFile(){return !!_currentName;},
     _restorePreview,
     _restorePreviewUrl,
+    loadFile:_load,
   };
 }
 
@@ -418,29 +434,269 @@ function saveState(s){
   try{ localStorage.setItem(LS_KEY,JSON.stringify(s)); }catch(e){}
 }
 
+// ── Info tooltip helper ───────────────────────────────────────────────────────
+// Small "i" badge with a body-level tooltip. The tooltip lives on <body> so it is
+// never clipped by the node's overflow:hidden. One shared element for all badges,
+// created lazily on first use.
+let _fkSharedTip=null;
+function _fkGetTip(){
+  if(_fkSharedTip) return _fkSharedTip;
+  _fkSharedTip=mk("div",{
+    position:"fixed",
+    background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"7px",
+    padding:"10px 12px",fontSize:"12px",color:C.text,lineHeight:"1.6",
+    width:"240px",boxShadow:"0 4px 16px rgba(0,0,0,.7)",
+    display:"none",zIndex:"999999",pointerEvents:"none",
+    whiteSpace:"normal",textAlign:"left",
+  });
+  document.body.appendChild(_fkSharedTip);
+  return _fkSharedTip;
+}
+function mkInfoBtn(text){
+  const btn=mk("button",{
+    width:"13px",height:"13px",minWidth:"13px",minHeight:"13px",maxWidth:"13px",maxHeight:"13px",
+    borderRadius:"50%",
+    background:"transparent",border:`1px solid ${C.borderH}`,boxSizing:"border-box",
+    color:C.muted,fontSize:"8px",fontWeight:"700",
+    cursor:"pointer",outline:"none",padding:"0",
+    display:"inline-flex",alignItems:"center",justifyContent:"center",
+    transition:"border-color .15s,color .15s",lineHeight:"1",flexShrink:"0",flexGrow:"0",
+    alignSelf:"center",overflow:"hidden",
+  });
+  tx(btn,"i");
+  btn.onmouseenter=()=>{btn.style.borderColor=C.text;btn.style.color=C.text;};
+  btn.onmouseleave=()=>{btn.style.borderColor=C.borderH;btn.style.color=C.muted;};
+  btn.addEventListener("mouseenter",()=>{
+    const tip=_fkGetTip();
+    const r=btn.getBoundingClientRect();
+    tx(tip,text);
+    tip.style.display="block";
+    const tipW=240;
+    let left=r.left+r.width/2-tipW/2;
+    if(left<6) left=6;
+    if(left+tipW>window.innerWidth-6) left=window.innerWidth-tipW-6;
+    tip.style.left=left+"px";
+    const place=()=>{
+      // Prefer above; flip below when there isn't room (the panel sits high in the node).
+      const above=r.top-tip.offsetHeight-6;
+      tip.style.top=(above<6?(r.bottom+6):above)+"px";
+    };
+    place();
+    requestAnimationFrame(place); // re-place once the tooltip has a measured height
+  });
+  btn.addEventListener("mouseleave",()=>{ if(_fkSharedTip) _fkSharedTip.style.display="none"; });
+  return btn;
+}
+
 // ── Active refs for event handlers ────────────────────────────────────────────
 let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError=null, _activePromptIdRef=null, _activeShowPreview=null;
+let _activePoseSkeleton=null; // POSE: called with the DWPose skeleton image URL (for before/after)
+let _activeShowFinalBatch=null; // T2I batch: called with an array of {filename, subfolder}
+let _activeShowTemp=null; // auto-save off: called with array of temp {filename, subfolder, type}
+let _activeSaveNode=null; // auto-save off: id of the current mode's save node (now a PreviewImage)
+let _activeAutoSend=null; // ()=>{} run after a result is shown, to push the image downstream
+let _activeBatchN=1; // batch size SNAPSHOTTED at Generate-click time — the completion handler
+                     // must use this, not the live S.batchCount, so changing the ×N dropdown
+                     // mid-run can't mis-route the result set (drop/mis-slice fresh images).
+
+// Registry of all live FluxKlein nodes, keyed by graph id (kept for cleanup on remove).
+const _fkNodes = {};
+
+// True when ComfyUI's "Nodes 2.0" (Vue node rendering) is enabled. We must NOT set the DOM
+// widget canvasOnly in that mode: Vue renders the node body itself and skips canvasOnly widgets,
+// so the whole UI would render blank. In classic (litegraph) mode canvasOnly is required to stop
+// the Parameters side-panel from stealing the widget (the collapsing-right-panel bug). So the
+// flag is applied conditionally per render mode.
+function _isVueNodes(){
+  try{
+    const v=app?.ui?.settings?.getSettingValue?.("Comfy.VueNodes.Enabled");
+    return v===true||v==="true";
+  }catch(e){ return false; }
+}
+
+// ── One Node family bus ───────────────────────────────────────────────────────
+// A tiny shared registry (on window so every One Node pack — Gemma, Flux, LTX… —
+// shares it) that lets connected One Nodes chain generations directly, WITHOUT
+// touching ComfyUI's queue. Each node registers { triggerGenerate, kind }. When a node
+// finishes and its "send" toggle is on, it calls _oneNodeChainForward(self.id), which
+// finds the One Nodes wired to its output and kicks off their generation. They read
+// their own upstream input and generate, then forward again — forming a chain.
+// Loop-safe: a node only generates when an UPSTREAM node pokes it (never itself), and
+// the re-entrancy guard below stops a poke mid-generation.
+if(!window.__oneNodeFamily) window.__oneNodeFamily={};
+const _oneNodeFamily=window.__oneNodeFamily;
+function _oneNodeRegister(id,api){ _oneNodeFamily[String(id)]=api; }
+// Identity-safe unregister: only drop the entry if it's STILL the same api object we
+// registered. On a workflow switch ComfyUI destroys old node instances AFTER creating the
+// new ones; if the new instance reused the same id, a blind delete here would wipe the live
+// new registration and the chain poke would hit nothing (Flux silently skipped). Passing the
+// api ref makes onRemoved a no-op when a newer instance already took over that id.
+function _oneNodeUnregister(id,api){
+  const k=String(id);
+  if(api!=null && _oneNodeFamily[k]!==api) return; // a newer instance owns this id now — keep it
+  delete _oneNodeFamily[k];
+}
+// Shared "a throwaway graph run is in flight" flag across ALL One Node packs. When any
+// One Node queues a graph run to push its output to plain downstream nodes, that run
+// re-executes the WHOLE graph — including other One Nodes (e.g. an upstream Gemma). They
+// must stay quiet (no re-show, no sound, no re-chaining) during it. A single boolean:
+// set when the run is queued, cleared by the FIRST execution_success that follows (the
+// graph run produces exactly one). A safety timeout clears it if no success arrives.
+function _oneNodeThrowawayBegin(){
+  window.__oneNodeThrowaway=true;
+  clearTimeout(window.__oneNodeThrowawayT);
+  window.__oneNodeThrowawayT=setTimeout(()=>{ window.__oneNodeThrowaway=false; },10000);
+}
+// Clear AFTER the current event dispatch finishes (setTimeout 0), so that EVERY
+// execution_success listener (this pack and others) still sees active===true during the
+// same throwaway run — otherwise whichever listener ran first would clear it and the
+// rest would mistake the throwaway run for a real one.
+function _oneNodeThrowawayEnd(){
+  clearTimeout(window.__oneNodeThrowawayT);
+  setTimeout(()=>{ window.__oneNodeThrowaway=false; },0);
+}
+function _oneNodeThrowawayActive(){ return !!window.__oneNodeThrowaway; }
+// Hard reset at the start of a real user generation so a stuck flag never silences it.
+function _oneNodeThrowawayForceClear(){ clearTimeout(window.__oneNodeThrowawayT); window.__oneNodeThrowaway=false; }
+// Given a source node id, poke every One Node connected to its output(s) to generate.
+// Pokes One Node targets wired to srcId's output to generate, and reports whether ANY
+// non-family (plain ComfyUI) node is also wired downstream. The caller uses that to
+// decide whether a graph run is needed: family targets generate via the poke (no graph
+// run), while plain targets (Preview, upscaler…) still need the graph run to receive
+// our output. Returns { hadFamily, hadPlain }.
+function _oneNodeChainForward(srcId){
+  const res={hadFamily:false,hadPlain:false};
+  try{
+    const src=app.graph.getNodeById(srcId);
+    if(!src||!src.outputs) return res;
+    const targetIds=new Set();
+    src.outputs.forEach(out=>{
+      (out&&out.links||[]).forEach(linkId=>{
+        const link=app.graph.links[linkId];
+        if(link) targetIds.add(String(link.target_id));
+      });
+    });
+    targetIds.forEach(tid=>{
+      const entry=_oneNodeFamily[tid];
+      if(entry&&typeof entry.triggerGenerate==="function"){
+        res.hadFamily=true;
+        try{ entry.triggerGenerate(); }catch(e){ console.warn("[OneNode] chain poke:",e); }
+      } else {
+        res.hadPlain=true;
+      }
+    });
+  }catch(e){ console.warn("[OneNode] chain forward:",e); }
+  return res;
+}
 
 // ── API events ────────────────────────────────────────────────────────────────
+// Guard so the WS listeners are registered exactly once even if this module is
+// evaluated more than once (hot reload / re-import) — double registration meant every
+// event fired twice (e.g. the done sound played 2×).
 (()=>{
+  if(window.__fluxklein_listeners) return;
+  window.__fluxklein_listeners=true;
+
   api.addEventListener("progress",(evt)=>{
     const {node,value,max}=evt.detail||{};
     if(!_activeS?.generating||!node) return;
+    // POSE: the DWPose preprocessor reports a single 1/1 progress step before the
+    // actual sampling. Show a clearer label so it doesn't look like "done at step 1".
+    if(node==="FKP:dwpose"){
+      if(_activeSetStage) _activeSetStage("Generating…","Analyzing pose…",0);
+      return;
+    }
+    // UPSCALE (SeedVR2): a single sampler step plus tiled VAE encode/decode passes, so
+    // "Step 1/1" is meaningless and the tile counts look like a stuck/odd step counter.
+    // Report what's actually happening instead.
+    if(typeof node==="string"&&node.startsWith("FKU:")){
+      const pctU=max>0?Math.round(value/max*100):0;
+      const label=node==="FKU:enc"?"Encoding…":node==="FKU:dec"?"Decoding…":
+                  node==="FKU:sampler"?"Restoring detail…":"Upscaling…";
+      if(_activeSetStage) _activeSetStage("Upscaling…",label,pctU);
+      return;
+    }
     const pct=max>0?Math.round(value/max*100):0;
     if(_activeSetStage) _activeSetStage("Generating…",`Step ${value}/${max}`,pct);
   });
 
-  api.addEventListener("execution_success",async()=>{
+  // POSE: FKP:posepreview (PreviewImage on the DWPose output) emits the skeleton
+  // image. Stash its URL so the final result can offer a before(skeleton)/after.
+  api.addEventListener("executed",(evt)=>{
+    if(_oneNodeThrowawayActive()) return; // ignore events from a One Node downstream-push graph run
     if(!_activeS?.generating) return;
+    const d=evt.detail||{};
+    if(d.node!=="FKP:posepreview") return;
+    const imgs=d.output?.images;
+    if(!imgs||!imgs.length) return;
+    const im=imgs[0];
+    const url=api.apiURL(`/view?filename=${encodeURIComponent(im.filename)}&type=${encodeURIComponent(im.type||"temp")}&subfolder=${encodeURIComponent(im.subfolder||"")}&t=${Date.now()}`);
+    _activePoseSkeleton?.(url);
+  });
+
+  // Auto-save off: the current mode's save node is a PreviewImage (temp). Grab its
+  // temp images here (a gallery scan won't see them — they're not in output).
+  api.addEventListener("executed",(evt)=>{
+    if(_oneNodeThrowawayActive()) return; // ignore events from a One Node downstream-push graph run
+    if(!_activeS?.generating) return;
+    const d=evt.detail||{};
+    // Only react to OUR OWN run — executed is global and a chained downstream graph fires it too.
+    const ourId=_activePromptIdRef?.();
+    if(d.prompt_id && ourId && d.prompt_id!==ourId) return;
+    // Only the temp/PreviewImage path (auto-save off) is handled here. When auto-save
+    // is on, the save node is a real SaveImage and also fires "executed" — but those
+    // results belong to the gallery (handled in execution_success), so ignore. We also
+    // match the exact save node id so we don't catch other PreviewImage nodes in a
+    // workflow (e.g. the POSE skeleton preview).
+    if(_activeS?.autoSave!==false) return;
+    if(!_activeSaveNode || d.node!==_activeSaveNode) return;
+    const imgs=d.output?.images;
+    if(!imgs||!imgs.length) return;
+    _activeShowTemp?.(imgs.map(im=>({filename:im.filename,subfolder:im.subfolder||"",type:im.type||"temp"})));
+  });
+
+  api.addEventListener("execution_success",async(evt)=>{
+    // A One Node downstream-push graph run finished — clear it and stay quiet.
+    if(_oneNodeThrowawayActive()){ _oneNodeThrowawayEnd(); return; }
+    if(!_activeS?.generating){
+      // Not our generation (e.g. the user pressing Run on the graph), OR the auto-save-off
+      // temp path already finished (it sets generating=false in showTemp and triggers
+      // auto-send itself). Either way, nothing to pull from the gallery here.
+      return;
+    }
+    // execution_success is GLOBAL — it fires for every prompt in the queue, including a
+    // chained downstream graph (e.g. a z-image edit reading our output). Only react to OUR
+    // OWN run. Without this, a foreign success while we're still generating would pull
+    // all[0] (the newest gallery image = a STALE image) and show + send that everywhere.
+    const successId=evt?.detail?.prompt_id;
+    const ourId=_activePromptIdRef?.();
+    if(successId && ourId && successId!==ourId) return; // foreign run (chained downstream graph) — ignore
     try{
       const r=await api.fetchApi(`/flux_klein/gallery?offset=0&limit=20&subfolder=one-node-flux-2-klein`);
       const d=await r.json();
       const prev=_activeS?._preRunFiles||new Set();
-      const v=(d.images||d.videos||[]).find(v=>!prev.has(v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)))||(d.images||d.videos||[])[0];
+      const all=(d.images||d.videos||[]);
+      const fresh=all.filter(v=>!prev.has(v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)));
+      // Use the batch size snapshotted at Generate time, NOT the live dropdown value — the
+      // user may have changed ×N mid-run, which would otherwise drop or mis-slice fresh images.
+      const batchN=Math.max(1,Math.min(4,+_activeBatchN||1));
+      // Batch (>1): hand the whole set of new images to the batch handler.
+      if(batchN>1 && _activeShowFinalBatch && fresh.length){
+        // Gallery returns newest first; reverse so the batch is shown in generation order.
+        const batch=fresh.slice(0,batchN).reverse().map(v=>({filename:v.filename,subfolder:v.subfolder||""}));
+        _activeShowFinalBatch(batch);
+        _activeAutoSend?.();
+        return;
+      }
+      // Only ever use a FRESH image (one that didn't exist before this run). Never fall
+      // back to all[0] — that's the newest gallery image, which on a foreign/empty result
+      // would be a STALE image shown in the preview and pushed downstream (the bug here).
+      const v=fresh[0];
       if(v){
         const cb=Date.now();
         const url=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=output&subfolder=${encodeURIComponent(v.subfolder||"")}&t=${cb}`);
         _activeShowFinal?.(url,v.filename,v.subfolder||"");
+        _activeAutoSend?.();
       }else{
         _activeResetBtn?.();
       }
@@ -451,6 +707,11 @@ let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError
   });
 
   api.addEventListener("execution_error",evt=>{
+    // A throwaway downstream-push graph run (auto-send) that ERRORS would otherwise never
+    // clear the shared flag — only execution_success does — leaving it stuck true until the
+    // 10s safety timeout, which silences every One Node pack's handlers meanwhile. Clear it
+    // here so a failed push doesn't create a ~10s dead window where generation shows nothing.
+    if(_oneNodeThrowawayActive()){ _oneNodeThrowawayForceClear(); return; }
     const errorPromptId=evt.detail?.prompt_id;
     if(errorPromptId && _activePromptIdRef && errorPromptId!==_activePromptIdRef()) return;
     const msg=fmtErr(evt.detail?.exception_message||evt.detail?.error||evt.detail||"Execution failed.");
@@ -465,6 +726,7 @@ let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError
     const url=URL.createObjectURL(blob);
     _activeShowPreview?.(url);
   });
+
 })();
 
 let _activeSetStage=null;
@@ -478,45 +740,119 @@ app.registerExtension({
 
     nodeType.prototype.onNodeCreated=function(){
       this.color=C.bg0;this.bgcolor=C.bg0;this.resizable=false;
+      // Reset to a clean slate, then (re)add our single IMAGE output. The Python
+      // RETURN_TYPES already declares it, but we rebuild outputs here so it survives
+      // and is styled consistently. Inputs (prompt + optional ext loaders) are left
+      // intact — they come from Python INPUT_TYPES / the ext-loaders toggle.
       this.outputs=[];
       if(this.widgets)this.widgets=[];
+      this.addOutput("image","IMAGE");
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
       const nodeId=this.id;
       const cached=window.__fluxklein_nodes[nodeId];
       if(cached){
+        // Point the cached UI's closures at THIS (current) node instance. On a workflow
+        // switch ComfyUI rebuilds the node but we reuse the cached DOM/closures, which were
+        // bound to the ORIGINAL instance via `self`. All id-dependent closures read
+        // cached.currentNode (see _buildUI), so updating it here keeps prompt-input reading,
+        // output push, and chain forwarding pointed at the live node — not a stale one.
+        cached.currentNode=this;
         _activeS=cached.S;
         _activeShowFinal=cached.fns.showFinal;
+        _activeShowFinalBatch=cached.fns.showFinalBatch;
+        _activeShowTemp=cached.fns.showTemp;
         _activeShowPreview=cached.fns.showPreview;
         _activeResetBtn=cached.fns.resetBtn;
         _activeShowError=cached.fns.showError;
         _activeSetStage=cached.fns.setStage;
+        _activePoseSkeleton=cached.fns.poseSkeleton;
+        _activeAutoSend=cached.fns.autoSend;
         _activePromptIdRef=cached.fns.getPromptId;
+        const _cnode=this;
         this.addDOMWidget("fk_ui","div",cached.root,{
           getValue(){return null;},setValue(){},serialize:false,
-          computeSize(){const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);const n=(self.inputs||[]).length;return[NODE_W,NODE_H+n*slotH];},
+          // canvasOnly (classic mode only): keeps this huge UI widget on the graph canvas so the
+          // Parameters side-panel can't steal it (collapsing-right-panel bug). In Nodes 2.0 the
+          // Vue renderer skips canvasOnly widgets → blank node, so we must NOT set it there.
+          canvasOnly:!_isVueNodes(),
+          computeSize(){
+            const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
+            const rows=Math.max((_cnode.inputs||[]).length,(_cnode.outputs||[]).length);
+            return [NODE_W,NODE_H+rows*slotH];
+          },
         });
-        this.setSize([NODE_W,NODE_H]);
+        {
+          const _sh=(LiteGraph.NODE_SLOT_HEIGHT||20);
+          const _rows=Math.max((this.inputs||[]).length,(this.outputs||[]).length);
+          this.setSize([NODE_W,NODE_H+_rows*_sh]);
+        }
         requestAnimationFrame(()=>{
           let el=cached.root;
           for(let i=0;i<6;i++){ el=el?.parentElement; if(!el)break; el.querySelectorAll("[class*='bg-node-component-surface']").forEach(b=>b.style.display="none"); }
         });
+        // CRITICAL: re-register into the One Node family bus here too. This cached branch
+        // runs on a workflow switch (the node instance is rebuilt but its UI is reused from
+        // cache). _buildUI — which normally does the family registration — is skipped, so
+        // without this the node would NOT be in the family registry and an upstream Gemma's
+        // chain poke would treat it as a plain node (Flux silently skipped, stale image sent).
+        // NOTE: this.id is still the placeholder -1 right now; LiteGraph assigns the real id a
+        // moment later. So we register, then RE-register on the next frame under the real id
+        // (and drop the stale -1 key) — exactly like the fresh _buildUI branch does.
+        if(typeof cached.fns.triggerGenerate==="function"){
+          const _cnode=this;
+          const _cachedApi={ kind:"flux", triggerGenerate:cached.fns.triggerGenerate };
+          this._fkFamilyApiRef=()=>_cachedApi;
+          let _cachedRegId=null;
+          const _regCached=()=>{
+            const id=_cnode.id;
+            if(_cachedRegId!=null && _cachedRegId!==id) _oneNodeUnregister(_cachedRegId,_cachedApi); // drop stale -1 key (only if still ours)
+            _cachedRegId=id;
+            _oneNodeRegister(id,_cachedApi);
+          };
+          _regCached();
+          requestAnimationFrame(_regCached);
+        }
         return;
       }
       this._buildUI();
     };
 
     nodeType.prototype.onResize=function(){
+      // Keep the node locked to NODE_H plus the height LiteGraph needs for the slot
+      // rows (whichever side — inputs or outputs — has more). The UI is fixed height.
       const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
-      const n=(this.inputs||[]).length;
-      this.size=[NODE_W,NODE_H+n*slotH];
+      const rows=Math.max((this.inputs||[]).length,(this.outputs||[]).length);
+      this.size=[NODE_W,NODE_H+rows*slotH];
     };
     nodeType.prototype.onDrawConnections=function(){};
     nodeType.prototype.getSlotMenuOptions=function(){return[];};
+    nodeType.prototype.onRemoved=function(){
+      // Clean up registries so nothing calls into a deleted node. Pass our own api ref so a
+      // newer instance that reused this id (workflow switch) is NOT wiped — see _oneNodeUnregister.
+      try{ delete _fkNodes[this.id]; }catch(e){}
+      try{ _oneNodeUnregister(this.id, this._fkFamilyApiRef?.()); }catch(e){}
+      // Only drop the UI cache if THIS instance still owns it. On a workflow switch the new
+      // instance has already claimed the cache (cached.currentNode=newNode) before this old
+      // instance's onRemoved fires; deleting it blindly would wipe the live UI cache and the
+      // reused node would lose its prompt-input wiring / output push (the bug seen here).
+      try{
+        const c=window.__fluxklein_nodes&&window.__fluxklein_nodes[this.id];
+        if(c && (c.currentNode===this || c.currentNode==null)) delete window.__fluxklein_nodes[this.id];
+      }catch(e){}
+    };
 
 
     nodeType.prototype._buildUI=function(){
       const self=this;
+      // The live node id. On a workflow switch the cached UI/closures are reused but bound to
+      // the original `self`; the cache's currentNode is repointed to the new instance, so read
+      // the id through it. Falls back to self before the cache object exists (during build).
+      let _curCacheKey=self.id;
+      const _liveId=()=>{
+        try{ const c=window.__fluxklein_nodes&&window.__fluxklein_nodes[_curCacheKey]; if(c&&c.currentNode) return c.currentNode.id; }catch(e){}
+        return self.id;
+      };
       const saved=loadState();
 
       if(!self._fk_S){
@@ -541,6 +877,7 @@ app.registerExtension({
           seed:          saved.seed||0,
           i2iImage:      saved.i2iImage||null,
           i2iDenoise:    saved.i2iDenoise!==undefined?saved.i2iDenoise:0.75,
+          inpaintDenoise: saved.inpaintDenoise!==undefined?saved.inpaintDenoise:1.0,
           i2iResizeLonger: saved.i2iResizeLonger||0,
           promptI2i:     saved.promptI2i||"",
           advancedUI:    saved.advancedUI||false,
@@ -554,15 +891,38 @@ app.registerExtension({
           image2Name:   saved.image2Name||null,
           fsTarget:     saved.fsTarget||null,   // faceswap: image to swap face IN
           fsSource:     saved.fsSource||null,   // faceswap: image whose face to use
-          fsLora:       saved.fsLora||"",       // faceswap: LoRA filename
+          // Older builds saved the literal "none" here, which the restore logic then treats as
+          // "no selection" — sanitise it back to "" so a real pick can stick.
+          fsLora:       (saved.fsLora==="none"?"":(saved.fsLora||"")),  // faceswap: LoRA filename
           fsResizeLonger: saved.fsResizeLonger||0, // 0 = disabled, >0 = resize longer side to this px
           bgRemovalModel: saved.bgRemovalModel||"",  // birefnet model for remove bg
+          batchCount:   saved.batchCount||1,    // T2I: how many images to generate per click (1-4)
+          autoSave:     saved.autoSave!==undefined?saved.autoSave:true, // T2I: auto-save results to gallery (default on)
+          autoSend:     saved.autoSend!==undefined?saved.autoSend:true, // send image output downstream automatically (default on)
+          // Pose (RefControl): DWPose skeleton from pose image + reference -> result.
+          poseImage:    saved.poseImage||null,   // pose: the pose to copy (DWPose skeleton)
+          poseRef:      saved.poseRef||null,     // pose: appearance/content reference image
+          poseLora:     saved.poseLora||"",      // refcontrol poses LoRA
+          poseUseSizeSource: saved.poseUseSizeSource!==undefined?saved.poseUseSizeSource:"pose", // "pose"|"ref" badge
+          poseResizeLonger:  saved.poseResizeLonger||0,   // 0 = disabled, >0 = resize longer side
+          // Upscale (SeedVR2): its own model + VAE, and the scale factor used by both the
+          // UPSCALE pill and the quick-upscale button next to the preview.
+          upscaleImage: saved.upscaleImage||null,  // UPSCALE pill: source image
+          upscaleModel: saved.upscaleModel||"",    // seedvr2 diffusion model
+          upscaleVae:   saved.upscaleVae||"",      // seedvr2 ema vae
+          upscaleFactor: saved.upscaleFactor||2,   // 2 | 4 | 6 | 8 (UPSCALE pill)
+          upscaleTile:   saved.upscaleTile||512,   // VAE tile size: 512 | 256 | 128 (lower = less VRAM)
+          // Optional shrink BEFORE upscaling (0 = off). SeedVR2 adds far more detail when it
+          // starts from a small source, so downsizing first often beats upscaling as-is.
+          upscalePreLonger: saved.upscalePreLonger||0,
+          quickUpscaleFactor: saved.quickUpscaleFactor||2, // 2 | 4 | 6 | 8 (button next to auto-save)
           // Prompt — shared (active pill's value) + per-pill storage
           prompt:       saved.prompt||"",
           promptT2i:    saved.promptT2i!==undefined?saved.promptT2i:((!saved.pill||saved.pill==="t2i")?saved.prompt||"":""),
           promptEdit:   saved.promptEdit!==undefined?saved.promptEdit:(saved.pill==="edit"?saved.prompt||"":""),
           promptPaint:  saved.promptPaint!==undefined?saved.promptPaint:(saved.pill==="inpaint"?saved.prompt||"":""),
           promptFs:     saved.promptFs!==undefined?saved.promptFs:(saved.pill==="faceswap"?saved.prompt||"":""),
+          promptPose:   saved.promptPose!==undefined?saved.promptPose:(saved.pill==="pose"?saved.prompt||"":""),
           // LoRAs
           userLoras:    saved.userLoras||[{name:"",strength:1.0},{name:"",strength:1.0},{name:"",strength:1.0}],
           // Generation state
@@ -571,13 +931,24 @@ app.registerExtension({
           _preRunFiles: new Set(),
           soundEnabled: saved.soundEnabled!==undefined?saved.soundEnabled:true,
           extLoaders:   saved.extLoaders||false,
+          // Downscale reference images (EDIT + I2I input slots) before VAE encode.
+          // Default ON at 1 MP = the existing behaviour, so existing users see no change.
+          downscaleRef:   saved.downscaleRef!==undefined?saved.downscaleRef:true,
+          downscaleRefMP: saved.downscaleRefMP!==undefined?saved.downscaleRefMP:1.0,
+          // UI layout: "classic" = wide prompt under the preview (default),
+          // "tall" = prompt in the left column so the preview gets full height.
+          layoutMode:   saved.layoutMode||"classic",
+          // Outpaint seam feather (px the mask fades into the original). 0 = auto
+          // (the previous min(48, edge/6) heuristic), so existing users see no change.
+          opFeather:    saved.opFeather!==undefined?saved.opFeather:0,
+          opSnap:       (saved.opSnap===64)?64:8, // outpaint size step: 8 (fine) | 64 (video/LTX)
           previewUrl:   null,
         };
       }
       const S=self._fk_S;
       // Sync S.prompt to the active pill's slot on init (covers first load before _pillPromptKey is available)
       {
-        const _initKey=S.pill==="edit"?"promptEdit":S.pill==="inpaint"?"promptPaint":S.pill==="faceswap"?"promptFs":S.pill==="i2i"?"promptI2i":"promptT2i";
+        const _initKey=S.pill==="edit"?"promptEdit":S.pill==="inpaint"?"promptPaint":S.pill==="faceswap"?"promptFs":S.pill==="pose"?"promptPose":S.pill==="i2i"?"promptI2i":"promptT2i";
         S.prompt=S[_initKey]||S.prompt||"";
         S[_initKey]=S.prompt;
       }
@@ -596,10 +967,19 @@ app.registerExtension({
           advancedUI:S.advancedUI, steps:S.steps, cfg:S.cfg, sampler:S.sampler, scheduler:S.scheduler, denoise:S.denoise,
           image1Name:S.image1Name, image2Name:S.image2Name,
           fsTarget:S.fsTarget, fsSource:S.fsSource, fsLora:S.fsLora, fsResizeLonger:S.fsResizeLonger, bgRemovalModel:S.bgRemovalModel,
+          batchCount:S.batchCount, autoSave:S.autoSave, autoSend:S.autoSend,
+          poseImage:S.poseImage, poseRef:S.poseRef, poseLora:S.poseLora,
+          poseUseSizeSource:S.poseUseSizeSource, poseResizeLonger:S.poseResizeLonger,
+          upscaleImage:S.upscaleImage, upscaleModel:S.upscaleModel, upscaleVae:S.upscaleVae,
+          upscaleFactor:S.upscaleFactor, upscalePreLonger:S.upscalePreLonger, upscaleTile:S.upscaleTile,
+          quickUpscaleFactor:S.quickUpscaleFactor,
           prompt:S.prompt, promptT2i:S.promptT2i, promptEdit:S.promptEdit,
-          promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i,
+          promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i, promptPose:S.promptPose,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
+          inpaintDenoise:S.inpaintDenoise,
           userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
+          downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
+          layoutMode:S.layoutMode, opFeather:S.opFeather, opSnap:S.opSnap,
         });
       };
 
@@ -652,6 +1032,17 @@ app.registerExtension({
           }catch(ex){}
           return S.resW;
         }
+        if(activePill==="pose"){
+          try{
+            const d=_poseImgDims._getDims();
+            // Pose badge off (scale mode) -> scale by longer side; on -> native size.
+            if(d.w&&d.h&&S.poseUseSizeSource!=="pose"&&S.poseResizeLonger>0){
+              return Math.round(d.w*(S.poseResizeLonger/Math.max(d.w,d.h))/16)*16;
+            }
+            return d.w||0;
+          }catch(ex){}
+          return S.resW;
+        }
         return S.isCustomRes?snapRes(S.customW):S.resW;
       };
       const getEffectiveH=()=>{
@@ -681,6 +1072,16 @@ app.registerExtension({
             const d=_fsTargetDims._getDims();
             if(d.w&&d.h&&!_fsUseOrigSize&&S.fsResizeLonger>0){
               return Math.round(d.h*(S.fsResizeLonger/Math.max(d.w,d.h))/16)*16;
+            }
+            return d.h||0;
+          }catch(ex){}
+          return S.resH;
+        }
+        if(activePill==="pose"){
+          try{
+            const d=_poseImgDims._getDims();
+            if(d.w&&d.h&&S.poseUseSizeSource!=="pose"&&S.poseResizeLonger>0){
+              return Math.round(d.h*(S.poseResizeLonger/Math.max(d.w,d.h))/16)*16;
             }
             return d.h||0;
           }catch(ex){}
@@ -911,9 +1312,13 @@ app.registerExtension({
         return window.__fkCustomTriggers[base]||"";
       };
 
-      // Row 2: Faceswap LoRA + Remove BG model
-      const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
-      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
+      // ── Workflow LoRAs box ────────────────────────────────────────────────
+      // The three LoRAs used internally by the mode workflows (Faceswap, and the
+      // two Pose phases) grouped in one subtly bordered box so it reads as a unit.
+      // Normalise "none" to "" on the way in (same as Pose LoRA below). Storing the literal
+      // string "none" made the restore below reject it as "no selection" forever after.
+      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora||"none",v=>{S.fsLora=v==="none"?"":v;persist();});
+      const poseLoraF=mkModDD("Pose LoRA","/models/loras",S.poseLora||"none",v=>{S.poseLora=v==="none"?"":v;persist();});
       const bgF=mkModDD("Remove BG Model","models/background_removal","none",v=>{S.bgRemovalModel=v==="none"?"":v;persist();});
       api.fetchApi("/flux_klein/bgremoval_models").then(r=>r.json()).then(d=>{
         const models=d.models||[];
@@ -921,7 +1326,27 @@ app.registerExtension({
         if(S.bgRemovalModel&&models.includes(S.bgRemovalModel)) bgF.dd.set(S.bgRemovalModel);
         else bgF.dd.set("none");
       }).catch(()=>{});
-      modGrid2.append(fsLoraF.wrap,bgF.wrap,mk("div"));
+
+      const _loraBox=mk("div",{
+        border:`1px solid ${C.border}`,borderRadius:"8px",padding:"10px",
+        marginBottom:"6px",background:"rgba(255,255,255,.012)",
+      });
+      const _loraBoxGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px"});
+      _loraBoxGrid.append(fsLoraF.wrap,poseLoraF.wrap,bgF.wrap);
+      _loraBox.append(_loraBoxGrid);
+
+      // ── Upscaler box ──────────────────────────────────────────────────────
+      // The SeedVR2 upscaler uses its OWN model + VAE (not the Flux ones), so they get
+      // their own labelled box to make that separation obvious at a glance.
+      const upModelF=mkModDD("Upscale Model (SeedVR2)","models/diffusion_models",S.upscaleModel||"none",v=>{S.upscaleModel=v==="none"?"":v;persist();},"seedvr");
+      const upVaeF=mkModDD("Upscale VAE","models/vae",S.upscaleVae||"none",v=>{S.upscaleVae=v==="none"?"":v;persist();},"ema_vae");
+      const _upBox=mk("div",{
+        border:`1px solid ${C.border}`,borderRadius:"8px",padding:"10px",
+        marginBottom:"16px",background:"rgba(255,255,255,.012)",
+      });
+      const _upBoxGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"});
+      _upBoxGrid.append(upModelF.wrap,upVaeF.wrap);
+      _upBox.append(_upBoxGrid);
 
       // ── Preferences ───────────────────────────────────────────────────────
       const prefTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
@@ -935,30 +1360,48 @@ app.registerExtension({
       const _extInputNames=["model","clip","vae"];
       const _extInputColors=["#b39ddb","#80cbc4","#ef9a9a"];
 
+      // Single source of truth for the node's size. The UI (DOM widget) is always
+      // NODE_H tall; LiteGraph stacks the input/output slots above it, reserving
+      // slotH per row for whichever side has more rows. We add that reserved height so
+      // the widget never overflows the node's bottom edge when slots are toggled.
+      const _fkResizeToFit=(node)=>{
+        node=node||app.graph.getNodeById(_liveId())||self;
+        if(!node) return;
+        const nIn=(node.inputs||[]).length;
+        const nOut=(node.outputs||[]).length;
+        const rows=Math.max(nIn,nOut);
+        node.size=[NODE_W, NODE_H+rows*_slotH];
+        node.setDirtyCanvas(true,true);
+      };
+
       const _applyExtLoaders=(enabled)=>{
-        const node=app.graph.getNodeById(self.id)||self;
+        const node=app.graph.getNodeById(_liveId())||self;
         if(!node) return;
         if(enabled){
-          const existing=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name));
-          if(existing.length===0){
-            _extInputNames.forEach((name,i)=>{
+          // Add any missing ext slots individually — some may already exist if a
+          // connected one (e.g. GGUF) was kept after a previous toggle-off.
+          _extInputNames.forEach((name,i)=>{
+            const has=(node.inputs||[]).some(inp=>inp.name===name);
+            if(!has){
               const type=i===0?"MODEL":i===1?"CLIP":"VAE";
               node.addInput(name,type);
               const slot=node.inputs[node.inputs.length-1];
               if(slot) slot.color_on=_extInputColors[i];
-            });
-          }
-          const n=(node.inputs||[]).length;
-          node.size=[NODE_W, NODE_H+n*_slotH];
-          node.setDirtyCanvas(true,true);
+            }
+          });
+          _fkResizeToFit(node);
         } else {
+          // Turning the toggle off removes the empty slots, but KEEPS any slot that
+          // still has a wire connected (e.g. a GGUF loader). That way you can flip the
+          // toggle off to expose the fp8 dropdowns without losing your GGUF hookup —
+          // switching fp8 <-> GGUF is then just connecting/disconnecting the wire.
           if(node.inputs&&node.inputs.length>0){
             for(let i=node.inputs.length-1;i>=0;i--){
-              if(_extInputNames.includes(node.inputs[i].name)) node.removeInput(i);
+              const inp=node.inputs[i];
+              if(_extInputNames.includes(inp.name)&&inp.link==null) node.removeInput(i);
             }
           }
-          node.size=[NODE_W, NODE_H];
-          node.setDirtyCanvas(true,true);
+          _fkResizeToFit(node);
         }
       };
 
@@ -968,7 +1411,54 @@ app.registerExtension({
         _refreshExtInputUI();
       });
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el);
+      // (Send-output-downstream toggle lives in the main UI preview area, bottom-left,
+      // next to the auto-save toggle — not in Settings.)
+
+      // ── Downscale reference images (EDIT + I2I) ──────────────────────────────
+      const _dsRow=mk("div",{display:"flex",flexDirection:"column",gap:"5px",padding:"9px 0",borderBottom:`1px solid ${C.border}`});
+      const _dsTop=mk("div",{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px"});
+      const _dsLblWrap=mk("div",{display:"flex",alignItems:"center",gap:"8px",flex:"1",minWidth:"0"});
+      const _dsLbl=mk("span",{fontSize:"12px",color:C.text});tx(_dsLbl,"Downscale reference images to");
+      // MP number input — only enabled when the toggle is ON
+      const _dsMP=mk("input",{
+        width:"52px",textAlign:"center",background:"rgba(255,255,255,.05)",
+        border:`1px solid rgba(255,255,255,.12)`,borderRadius:"6px",
+        color:LIME,fontSize:"11px",fontWeight:"700",padding:"4px 0",outline:"none",
+        transition:"border-color .15s,opacity .15s",flexShrink:"0",
+      },{type:"number",step:"0.1",min:"0.1",max:"16",value:String(S.downscaleRefMP)});
+      const _dsMPUnit=mk("span",{fontSize:"11px",color:C.muted,flexShrink:"0"});tx(_dsMPUnit,"MP");
+      _dsLblWrap.append(_dsLbl,_dsMP,_dsMPUnit);
+      // Toggle track (reuse the same visual style as Toggle())
+      const _dsTrack=mk("div",{width:"34px",height:"18px",borderRadius:"9px",
+        background:S.downscaleRef?LIME:C.dim,cursor:"pointer",position:"relative",transition:"background .2s",flexShrink:"0"});
+      const _dsThumb=mk("div",{position:"absolute",top:"2px",left:S.downscaleRef?"16px":"2px",
+        width:"14px",height:"14px",borderRadius:"50%",background:S.downscaleRef?"#111":"#888",transition:"left .2s,background .2s"});
+      _dsTrack.appendChild(_dsThumb);
+      const _dsHint=mk("div",{fontSize:"9px",color:C.muted,lineHeight:"1.5"});
+      _dsHint.innerHTML="Shrinks the input image before it enters the model - in <b>EDIT</b> and <b>Sketch</b> modes. Lower MP = faster generation and lower VRAM, but finer details may be lost and the result can shift slightly, since the image gets resized to fit the model. Recommended if you have limited VRAM or hit out-of-memory errors on large images. Turn it <b>off</b> for maximum fidelity when your GPU can handle the full resolution.";
+      const _dsApplyEnabled=()=>{
+        const on=S.downscaleRef;
+        _dsMP.disabled=!on;
+        _dsMP.style.opacity=on?"1":"0.4";
+        _dsLbl.style.opacity=on?"1":"0.6";
+      };
+      _dsTrack.onclick=()=>{
+        S.downscaleRef=!S.downscaleRef;
+        _dsTrack.style.background=S.downscaleRef?LIME:C.dim;
+        _dsThumb.style.left=S.downscaleRef?"16px":"2px";
+        _dsThumb.style.background=S.downscaleRef?"#111":"#888";
+        _dsApplyEnabled();persist();
+      };
+      _dsMP.onfocus=()=>_dsMP.style.borderColor=LIME;
+      _dsMP.onblur=()=>{
+        let v=_pf(_dsMP.value); if(isNaN(v)||v<=0) v=1.0; v=Math.min(16,Math.max(0.1,v));
+        S.downscaleRefMP=v; _dsMP.value=String(v); _dsMP.style.borderColor="rgba(255,255,255,.12)"; persist();
+      };
+      _dsTop.append(_dsLblWrap,_dsTrack);
+      _dsRow.append(_dsTop,_dsHint);
+      _dsApplyEnabled();
+
+      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,_loraBox,_upBox,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -1065,30 +1555,6 @@ app.registerExtension({
         return wrap;
       };
 
-      // ── Gated model warning ───────────────────────────────────────────────
-      const gatedWarn=mk("div",{
-        display:"flex",gap:"10px",alignItems:"flex-start",
-        background:"rgba(255,165,0,.07)",border:"1px solid rgba(255,165,0,.35)",
-        borderRadius:"8px",padding:"10px 13px",marginBottom:"14px",
-      });
-      const gatedIcon=mk("div",{fontSize:"18px",lineHeight:"1",flexShrink:"0",marginTop:"1px"});
-      tx(gatedIcon,"🔐");
-      const gatedText=mk("div",{display:"flex",flexDirection:"column",gap:"3px"});
-      const gatedTitle=mk("div",{fontSize:"10px",fontWeight:"700",color:"#ffb347",letterSpacing:".03em"});
-      tx(gatedTitle,"9B models require HuggingFace access");
-      const gatedBody=mk("div",{fontSize:"9px",color:"#ccc",lineHeight:"1.6"});
-      tx(gatedBody,"These models are gated under the FLUX Non-Commercial License. You must log in to HuggingFace, visit the model page, and click \"Agree\" to accept the license terms before the download links will work.\nNon-commercial use only.");
-      gatedBody.style.whiteSpace="pre-line";
-      const gatedLink=document.createElement("a");
-      gatedLink.href="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B";
-      gatedLink.target="_blank"; gatedLink.rel="noopener";
-      Object.assign(gatedLink.style,{fontSize:"9px",color:"#ffb347",textDecoration:"none",display:"inline-flex",alignItems:"center",gap:"3px",marginTop:"3px",width:"fit-content"});
-      gatedLink.innerHTML=`<svg viewBox="0 0 24 24" width="9" height="9" fill="currentColor"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg> Request access on HuggingFace`;
-      gatedLink.addEventListener("mouseenter",()=>gatedLink.style.opacity=".75");
-      gatedLink.addEventListener("mouseleave",()=>gatedLink.style.opacity="1");
-      gatedText.append(gatedTitle,gatedBody,gatedLink);
-      gatedWarn.append(gatedIcon,gatedText);
-
       const modelsSectionTitle=_mkHelpSectionTitle("Where to Get Models");
       modelsSectionTitle.style.borderTop="none"; modelsSectionTitle.style.paddingTop="0";
       const modelsList=mk("div",{display:"flex",flexDirection:"column",gap:"2px",marginBottom:"8px"});
@@ -1096,8 +1562,6 @@ app.registerExtension({
         _mkModelRow("Diffusion Model","models/diffusion_models/",[
           {name:"flux-2 klein 9b distilled",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/resolve/main/flux-2-klein-9b.safetensors"},
           {name:"flux-2 klein 9b fp8 distilled",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors"},
-          {name:"flux-2 klein 9b kv",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv/resolve/main/flux-2-klein-9b-kv.safetensors"},
-          {name:"flux-2 klein 9b kv fp8",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv-fp8/resolve/main/flux-2-klein-9b-kv-fp8.safetensors"},
           {name:"flux-2 klein 4b distilled",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/main/flux-2-klein-4b.safetensors"},
           {name:"flux-2 klein 4b fp8 distilled",url:"https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors"},
         ]),
@@ -1116,8 +1580,17 @@ app.registerExtension({
           {name:"bfs head swap v1 (9b)",url:"https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors"},
           {name:"bfs head swap v1 (4b)",url:"https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_4b.safetensors"},
         ]),
+        _mkModelRow("Pose LoRA","models/loras/",[
+          {name:"refcontrol v2 poses (9b)",url:"https://huggingface.co/thedeoxen/refcontrol-FLUX.2-klein-9B-reference-pose-lora/resolve/main/refcontrol_v2_poses.safetensors?download=true"},
+        ]),
         _mkModelRow("BG Removal","models/background_removal/",[
           {name:"birefnet",url:"https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors"},
+        ]),
+        _mkModelRow("Upscale Model","models/diffusion_models/",[
+          {name:"seedvr2 (pick a variant)",url:"https://huggingface.co/Comfy-Org/SeedVR2/tree/main/diffusion_models"},
+        ],"For UPSCALE mode — pick the variant that fits your VRAM"),
+        _mkModelRow("Upscale VAE","models/vae/",[
+          {name:"ema_vae_fp16",url:"https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/vae/ema_vae_fp16.safetensors"},
         ]),
       );
 
@@ -1171,7 +1644,7 @@ app.registerExtension({
 
       bottomRow.append(linksCol,authorCol);
 
-      helpOverlay.append(helpHdr,modelsSectionTitle,gatedWarn,modelsList,bottomRow);
+      helpOverlay.append(helpHdr,modelsSectionTitle,modelsList,bottomRow);
 
       tipsBtn.onclick=()=>openOverlay(helpOverlay);
 
@@ -1189,9 +1662,12 @@ app.registerExtension({
       settingsBtn.onmouseenter=()=>{settingsBtn.style.borderColor=C.text;settingsBtn.style.color=C.text;settGear.style.transform="rotate(30deg)";};
       settingsBtn.onmouseleave=()=>{settingsBtn.style.borderColor=C.borderH;settingsBtn.style.color=C.muted;settGear.style.transform="";};
       const _refreshExtInputUI=()=>{
-        const n=app.graph.getNodeById(self.id);
-        const isConn=(name)=>{
-          if(!n||!n.inputs) return false;
+        const n=app.graph.getNodeById(_liveId());
+        // Only dim a dropdown when external inputs are ENABLED and that slot is wired.
+        // With the toggle off, the dropdowns are always live (their model is used),
+        // even if a GGUF wire is still physically connected.
+        const isActive=(name)=>{
+          if(!S.extLoaders||!n||!n.inputs) return false;
           const slot=n.inputs.find(i=>i.name===name);
           return slot&&slot.link!=null;
         };
@@ -1200,12 +1676,36 @@ app.registerExtension({
           wrap.style.pointerEvents=connected?"none":"";
           wrap.title=connected?"Connected externally — disconnect to use dropdown":"";
         };
-        dim(modelF.wrap,isConn("model"));
-        dim(teF.wrap,  isConn("clip"));
-        dim(vaeF.wrap, isConn("vae"));
+        dim(modelF.wrap,isActive("model"));
+        dim(teF.wrap,  isActive("clip"));
+        dim(vaeF.wrap, isActive("vae"));
       };
       settingsBtn.onclick=e=>{e.stopPropagation();_refreshExtInputUI();openOverlay(settingsOverlay);};
       settClose.onclick=()=>closeOverlayFade(settingsOverlay);
+
+      // ── Layout toggle (classic wide-prompt ↔ tall preview) ────────────────
+      const layoutBtn=mk("button",{
+        background:"transparent",border:`1.5px solid ${C.borderH}`,
+        borderRadius:"6px",padding:"4px 8px",
+        cursor:"pointer",color:C.muted,
+        display:"flex",alignItems:"center",gap:"4px",
+        transition:"opacity .15s, border-color .15s, color .15s",outline:"none",
+      });
+      const _setLayoutBtnIcon=()=>{
+        // Icon hints the layout you'll switch TO; lime when "tall" is active.
+        const tall=S.layoutMode==="tall";
+        layoutBtn.title=tall?"Layout: tall preview (click for classic wide prompt)":"Layout: classic (click for tall preview)";
+        layoutBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>`;
+        layoutBtn.style.color=tall?LIME:C.muted;
+        layoutBtn.style.borderColor=tall?LIME:C.borderH;
+      };
+      _setLayoutBtnIcon();
+      layoutBtn.onmouseenter=()=>{layoutBtn.style.borderColor=LIME;layoutBtn.style.color=LIME;};
+      layoutBtn.onmouseleave=()=>{_setLayoutBtnIcon();};
+      layoutBtn.onclick=()=>{
+        S.layoutMode=S.layoutMode==="tall"?"classic":"tall";
+        _applyLayout(S.layoutMode);_setLayoutBtnIcon();persist();
+      };
 
       // Fullscreen node button
       const fsNodeBtn=mk("button",{
@@ -1283,7 +1783,7 @@ app.registerExtension({
 
       const topBarLeft=mk("div",{display:"flex",gap:"3px",alignItems:"center",flexWrap:"nowrap"});
       const topBarRight=mk("div",{display:"flex",gap:"6px",alignItems:"center",flexShrink:"0"});
-      topBarRight.append(galleryBtn,tipsBtn,settingsBtn,fsNodeBtn);
+      topBarRight.append(galleryBtn,tipsBtn,settingsBtn,layoutBtn,fsNodeBtn);
       topBar.append(topBarLeft,topBarRight);
 
       // ── PILLS ─────────────────────────────────────────────────────────────
@@ -1294,11 +1794,13 @@ app.registerExtension({
       const pillEdit    =Pill("EDIT",    activePill==="edit",     ()=>setPill("edit"));
       const pillInpaint =Pill("PAINT",   activePill==="inpaint",  ()=>setPill("inpaint"));
       const pillFaceswap=Pill("FACESWAP",activePill==="faceswap", ()=>setPill("faceswap"));
-      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap);
+      const pillPose    =Pill("POSE",    activePill==="pose",     ()=>setPill("pose"));
+      const pillUpscale =Pill("UPSCALE", activePill==="upscale",  ()=>setPill("upscale"));
+      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose,pillUpscale);
 
       let _promptTARef=null; // set after promptTA is created
 
-      const _pillPromptKey=(p)=>p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":"promptFs";
+      const _pillPromptKey=(p)=>p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":p==="pose"?"promptPose":"promptFs";
 
       function setPill(p){
         // Save current prompt to old pill's slot before switching
@@ -1315,13 +1817,15 @@ app.registerExtension({
         S.prompt=S[_pillPromptKey(p)];
         if(_promptTARef){ _promptTARef.value=S.prompt; if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=S.prompt; }
         persist();
-        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap].forEach(b=>{
+        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose,pillUpscale].forEach(b=>{
           const isActive=
             (b===pillT2I&&p==="t2i")||
             (b===pillI2I&&p==="i2i")||
             (b===pillEdit&&p==="edit")||
             (b===pillInpaint&&p==="inpaint")||
-            (b===pillFaceswap&&p==="faceswap");
+            (b===pillFaceswap&&p==="faceswap")||
+            (b===pillPose&&p==="pose")||
+            (b===pillUpscale&&p==="upscale");
           b.style.background=isActive?LIME:C.bg2;
           b.style.color=isActive?"#111":C.text;
           b.style.borderColor=isActive?LIME:C.border;
@@ -1334,7 +1838,21 @@ app.registerExtension({
       // ── MAIN ROW ─────────────────────────────────────────────────────────
       const mainRow=mk("div",{display:"flex",gap:"12px",alignItems:"stretch",flex:"1",minHeight:"0"});
       const leftPanel=mk("div",{display:"flex",flexDirection:"column",gap:"7px",
-        width:"300px",flexShrink:"0"});
+        width:"300px",flexShrink:"0",minHeight:"0",overflowY:"auto",overflowX:"hidden"});
+
+      // Switch prompt placement between the two layouts. promptWrap is defined
+      // further down but captured by closure; this only runs at assemble time / on toggle.
+      const _applyLayout=(mode)=>{
+        if(mode==="tall"){
+          // Prompt in the left column → preview (mainRow) takes the full height.
+          leftPanel.appendChild(promptWrap);
+          promptTA.style.height="94px"; // a little taller to use the column space
+        } else {
+          // Classic: wide prompt under the preview (original 80px height).
+          pad.appendChild(promptWrap);
+          promptTA.style.height="80px";
+        }
+      };
 
       // ── Node-local fullscreen overlay ────────────────────────────────────
       let _nodeFsOv=null;
@@ -1361,21 +1879,13 @@ app.registerExtension({
         _nfTopBar.append(_nfName,_nfCloseBtn);
         const _nfMediaWrap=mk("div",{width:"100%",height:"100%",display:"flex",
           alignItems:"center",justifyContent:"center",padding:"48px 16px 16px",boxSizing:"border-box"});
-        const _nfPillRow=mk("div",{display:"flex",gap:"6px",justifyContent:"center",
-          flexWrap:"wrap",marginTop:"8px"});
-        const _nfPill=(t)=>{
-          const p=mk("div",{fontSize:"9px",color:"rgba(255,255,255,.55)",fontWeight:"600",
-            border:"1px solid rgba(255,255,255,.15)",borderRadius:"20px",
-            padding:"2px 9px",letterSpacing:".04em",whiteSpace:"nowrap",background:"rgba(255,255,255,.05)"});
-          tx(p,t);return p;
-        };
         const _nfClose=()=>{
           if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
           if(ov._fsUseBtn){ov._fsUseBtn.remove();ov._fsUseBtn=null;}
           ov.style.display="none";
           const img=_nfMediaWrap.querySelector("img");
           if(img) img.src="";
-          _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          _nfMediaWrap.innerHTML="";
           // Restore preview action buttons
           if(typeof previewUseWrap!=="undefined") previewUseWrap.style.visibility="";
           if(typeof previewDelBtn!=="undefined") previewDelBtn.style.visibility="";
@@ -1384,9 +1894,37 @@ app.registerExtension({
         ov.addEventListener("keydown",e=>{if(e.key==="Escape")_nfClose();});
         ov.setAttribute("tabindex","-1");
         ov._close=_nfClose;
-        ov.append(_nfTopBar,_nfMediaWrap);
+
+        // ── Batch navigation inside fullscreen (mirrors the in-UI batch nav) ──
+        // ov._navHook is wired up later (once _batchImgs/_batchShow exist) to step the
+        // batch and re-render this overlay. Shown only when a batch is open.
+        const _nfNav=mk("div",{
+          position:"absolute",bottom:"16px",left:"50%",transform:"translateX(-50%)",
+          zIndex:"6",display:"none",alignItems:"center",gap:"10px",
+          background:"rgba(20,20,20,.85)",border:"1px solid rgba(255,255,255,.2)",
+          borderRadius:"10px",padding:"6px 10px",backdropFilter:"blur(4px)",
+          boxShadow:"0 2px 10px rgba(0,0,0,.6)",
+        });
+        const _nfNavBtn=(svg)=>{ const b=mk("button",{background:"transparent",border:"none",
+          color:"rgba(255,255,255,.85)",cursor:"pointer",padding:"3px 6px",outline:"none",
+          display:"flex",alignItems:"center",lineHeight:"0",borderRadius:"5px"});
+          b.innerHTML=svg; b.onmouseenter=()=>b.style.color=LIME; b.onmouseleave=()=>b.style.color="rgba(255,255,255,.85)"; return b; };
+        const _nfPrev=_nfNavBtn(`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>`);
+        const _nfNext=_nfNavBtn(`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>`);
+        const _nfCounter=mk("span",{fontSize:"11px",fontWeight:"700",color:"#fff",minWidth:"36px",textAlign:"center",letterSpacing:".03em"});
+        _nfPrev.onclick=(e)=>{ e.stopPropagation(); ov._navHook&&ov._navHook(-1); };
+        _nfNext.onclick=(e)=>{ e.stopPropagation(); ov._navHook&&ov._navHook(1); };
+        _nfNav.append(_nfPrev,_nfCounter,_nfNext);
+        ov._nfNav=_nfNav; ov._nfCounter=_nfCounter;
+
+        ov.append(_nfTopBar,_nfMediaWrap,_nfNav);
         ov._open=(type,src,name,opts)=>{
-          _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          // Clean up any previous comparer drag listeners / Use-as button before
+          // re-rendering — _open is called again on each batch step.
+          if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
+          if(ov._fsUseBtn){ov._fsUseBtn.remove();ov._fsUseBtn=null;}
+          _nfMediaWrap.innerHTML="";
+          _nfMediaWrap.style.padding="0"; // image and comparer both fill the full area
           tx(_nfName,name||"");
           // Hide preview action buttons while fullscreen overlay is open (image-only mode)
           if(type==="image"){
@@ -1394,17 +1932,14 @@ app.registerExtension({
             if(typeof previewDelBtn!=="undefined"&&previewDelBtn) previewDelBtn.style.visibility="hidden";
           }
           if(type==="image"){
-            const outer=mk("div",{display:"flex",flexDirection:"column",alignItems:"center",
-              justifyContent:"center",gap:"8px",width:"100%",height:"100%"});
-            const img=mk("img",{maxWidth:"100%",maxHeight:"calc(100% - 56px)",objectFit:"contain",
+            // Image fills the whole overlay (like the comparer): no dims badge, no
+            // top/bottom reserved space — just the largest possible contained image.
+            _nfMediaWrap.style.padding="0";
+            const img=mk("img",{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
               borderRadius:"8px",boxShadow:"0 4px 24px rgba(0,0,0,.5)",display:"block"});
             img.src=src;
-            img.onload=()=>{
-              _nfPillRow.innerHTML="";
-              _nfPillRow.appendChild(_nfPill(`${img.naturalWidth}×${img.naturalHeight} px`));
-            };
-            outer.append(img,_nfPillRow);
-            _nfMediaWrap.appendChild(outer);
+            _nfMediaWrap.appendChild(img);
+            ov._curImg=img; ov._curCmpGen=null; ov._curCmpBase=null;
           } else if(type==="comparer"){
             // Full-screen before/after comparer with "Use as input" in top-right
             const {genSrc,baseSrc,onUse}=opts||{};
@@ -1446,6 +1981,7 @@ app.registerExtension({
             _nfMediaWrap.style.padding="0"; // comparer fills full area
             _nfMediaWrap.appendChild(cWrap);
             cGenImg.onload=()=>{ _fsSetPct(100); };
+            ov._curImg=null; ov._curCmpGen=cGenImg; ov._curCmpBase=cBase; ov._curCmpSetPct=_fsSetPct;
             // "Use as input" button — top-right corner of the overlay
             if(onUse){
               const useBtn=mk("button",{
@@ -1466,7 +2002,38 @@ app.registerExtension({
               ov._fsUseBtn=useBtn;
             }
           }
+          // Show batch nav when a multi-image batch is open; ov._navInfo is set by the
+          // hook wiring (count + current index) so we don't reach into batch state here.
+          const ni=ov._navInfo;
+          if(ni&&ni.count>1){
+            _nfNav.style.display="flex";
+            tx(_nfCounter,`${ni.idx+1} / ${ni.count}`);
+          } else {
+            _nfNav.style.display="none";
+          }
           ov.style.display="flex";ov.focus();
+        };
+        // Update the batch counter / nav visibility from ov._navInfo.
+        const _nfRefreshNav=()=>{
+          const ni=ov._navInfo;
+          if(ni&&ni.count>1){ _nfNav.style.display="flex"; tx(_nfCounter,`${ni.idx+1} / ${ni.count}`); }
+          else { _nfNav.style.display="none"; }
+        };
+        // Lightweight media swap for batch stepping: if the overlay is already showing
+        // the same kind of media, just change the image src(s) in place instead of
+        // tearing down and rebuilding the DOM (which caused a brief flash of the old
+        // image at the wrong size). Returns false if a full _open is needed instead.
+        ov._updateMedia=(type,src,baseSrc)=>{
+          if(type==="image"&&ov._curImg){
+            ov._curImg.src=src; _nfRefreshNav(); return true;
+          }
+          if(type==="comparer"&&ov._curCmpGen&&ov._curCmpBase){
+            if(baseSrc!==undefined&&baseSrc!==null) ov._curCmpBase.src=baseSrc;
+            ov._curCmpGen.src=src;
+            ov._curCmpSetPct&&ov._curCmpSetPct(100);
+            _nfRefreshNav(); return true;
+          }
+          return false;
         };
         root.appendChild(ov);
         _nodeFsOv=ov;
@@ -1811,6 +2378,7 @@ app.registerExtension({
 
       // Uploaded mask filename — declared here so _paintSlot callback can reset it on new image load
       let _maskName=null;
+      let _paintRefName=S.inpaintRefName||null; // optional reference image for reference-guided inpainting
       let _opMaskName=null;  // uploaded outpaint mask (white=new area)
       let _inpaintPromptSet=false;  // true after first inpaint Apply — prevents overwriting user prompt
       let _outpaintPromptSet=false; // true after first outpaint Apply Changes
@@ -1879,6 +2447,7 @@ app.registerExtension({
         _inpaintBtn.style.background=inpaintActive?"rgba(240,255,65,.12)":C.bg2;
         _inpaintBtn.style.borderColor=inpaintActive?LIME:C.borderH;
         _inpaintBtn.querySelector("div").style.color=inpaintActive?LIME:C.text;
+        if(typeof _refreshPaintBatchNote==="function") _refreshPaintBatchNote();
       };
 
       _paintActCol.append(_sketchBtn,_inpaintBtn);
@@ -1892,7 +2461,21 @@ app.registerExtension({
       _paintCustomRow.append(_paintWInp,_paintHInp);
       const _paintUpdateSizeNote=()=>{}; // no-op — no visible note
 
-      inpaintPanel.append(_paintTopRow);
+      // Note shown under the image slot whenever ×N > 1 in PAINT mode — batch only works in
+      // Sketch; inpaint/outpaint build a single-image, mask-bound latent that can't be batched.
+      const _paintBatchNote=mk("div",{
+        display:"none",fontSize:"9px",color:"#e0b050",fontWeight:"600",
+        letterSpacing:".02em",padding:"4px 8px",lineHeight:"1.4",
+        background:"rgba(224,176,80,.08)",border:"1px solid rgba(224,176,80,.28)",
+        borderRadius:"6px",marginTop:"2px",
+      });
+      tx(_paintBatchNote,"Batch is available only in Sketch. Inpaint & Outpaint run one image at a time.");
+      const _refreshPaintBatchNote=()=>{
+        // Show whenever in PAINT mode with ×N > 1 — regardless of sketch/inpaint/outpaint sub-mode.
+        _paintBatchNote.style.display=(activePill==="inpaint"&&(+S.batchCount||1)>1)?"block":"none";
+      };
+
+      inpaintPanel.append(_paintTopRow,_paintBatchNote);
 
       // ── SKETCH OVERLAY (inside root, full node area) ──────────────────────
       const _sketchOv=mk("div",{
@@ -1960,8 +2543,33 @@ app.registerExtension({
       const _skSzLabel=mk("div",{fontSize:"8px",fontWeight:"700",color:LIME,letterSpacing:".07em",
         textTransform:"uppercase",flexShrink:"0"});
       tx(_skSzLabel,"Canvas");
-      const _sketchWInp=NI("W",1024,64,4096,8,()=>{},"66px");
-      const _sketchHInp=NI("H",1024,64,4096,8,()=>{},"66px");
+      let _skArLocked=false;
+      let _skArRatio=null;
+      const _skArLockBtn=mk("button",{
+        width:"20px",height:"20px",borderRadius:"4px",flexShrink:"0",
+        background:"transparent",border:`1px solid ${C.border}`,
+        color:C.muted,cursor:"pointer",outline:"none",padding:"0",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        transition:"border-color .15s,color .15s,background .15s",
+      });
+      const _skLockIconOpen=`<svg viewBox="0 0 12 14" width="10" height="11" fill="currentColor"><rect x="1" y="6" width="10" height="8" rx="1.5"/><path d="M3.5 6V4a2.5 2.5 0 015 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+      const _skLockIconClosed=`<svg viewBox="0 0 12 14" width="10" height="11" fill="currentColor"><rect x="1" y="6" width="10" height="8" rx="1.5"/><path d="M3.5 6V4a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+      _skArLockBtn.innerHTML=_skLockIconOpen;
+      _skArLockBtn.title="Lock aspect ratio";
+      _skArLockBtn.onclick=()=>{
+        _skArLocked=!_skArLocked;
+        if(_skArLocked) _skArRatio=(_sketchWInp.numVal||1024)/(_sketchHInp.numVal||1024);
+        _skArLockBtn.style.borderColor=_skArLocked?LIME:C.border;
+        _skArLockBtn.style.color=_skArLocked?LIME:C.muted;
+        _skArLockBtn.style.background=_skArLocked?"rgba(240,255,65,.08)":"transparent";
+        _skArLockBtn.innerHTML=_skArLocked?_skLockIconClosed:_skLockIconOpen;
+      };
+      const _sketchWInp=NI("W",1024,64,4096,8,(v)=>{
+        if(_skArLocked&&_skArRatio) _sketchHInp.setVal(Math.max(64,Math.round(v/_skArRatio)));
+      },"66px");
+      const _sketchHInp=NI("H",1024,64,4096,8,(v)=>{
+        if(_skArLocked&&_skArRatio) _sketchWInp.setVal(Math.max(64,Math.round(v*_skArRatio)));
+      },"66px");
       _sketchWInp._inp.addEventListener("keydown",e=>{ if(e.key==="Tab"&&!e.shiftKey){ e.preventDefault(); _sketchHInp._inp.focus(); _sketchHInp._inp.select(); } });
       _sketchHInp._inp.addEventListener("keydown",e=>{ if(e.key==="Tab"&&e.shiftKey){ e.preventDefault(); _sketchWInp._inp.focus(); _sketchWInp._inp.select(); } });
       const _sketchXLbl=mk("button",{
@@ -2008,13 +2616,13 @@ app.registerExtension({
         if(_sketchSizeApplied){ _sketchResApplyBtn.style.background="rgba(255,255,255,.08)";_sketchResApplyBtn.style.color="rgba(255,255,255,.6)"; }
         else _sketchResApplyBtn.style.background="rgba(240,255,65,.15)";
       };
-      _sketchSizeGroup.append(_skSzLabel,_sketchWInp,_sketchXLbl,_sketchHInp,_sketchResApplyBtn);
+      _sketchSizeGroup.append(_skSzLabel,_sketchWInp,_sketchXLbl,_sketchHInp,_skArLockBtn,_sketchResApplyBtn);
 
       // _sketchColorSwatch placeholder — real swatch built in left toolbar below
       const _sketchColorSwatch=mk("div",{display:"none"});
       // _sketchSizeSlider/_sketchSizeNumInp — referenced by toolbar for sync
-      const _sketchSizeSlider=mk("input",{display:"none"},{type:"range",min:"1",max:"80",value:"8"});
-      const _sketchSizeNumInp=mk("input",{display:"none"},{type:"number",min:"1",max:"80",value:"8"});
+      const _sketchSizeSlider=mk("input",{display:"none"},{type:"range",min:"1",max:"500",value:"8"});
+      const _sketchSizeNumInp=mk("input",{display:"none"},{type:"number",min:"1",max:"500",value:"8"});
 
       // ── Zoom ─────────────────────────────────────────────────────────────
       const _mkZBtn=(t,icon)=>{
@@ -2065,6 +2673,7 @@ app.registerExtension({
       _sketchCloseBtn.onmouseenter=()=>_sketchCloseBtn.style.color="#fff";
       _sketchCloseBtn.onmouseleave=()=>_sketchCloseBtn.style.color=C.muted;
       const _closeSketch=()=>{
+        if(_sketchFullscreen) _sketchFsExit();
         _sketchOv.style.opacity="0";
         setTimeout(()=>{
           _sketchOv.style.display="none";
@@ -2082,7 +2691,54 @@ app.registerExtension({
       });
       _sketchTopCenter.append(_sketchSizeGroup,_skBtnSep(),_sketchZoomOut,_sketchZoomReset,_sketchZoomIn,_skBtnSep(),_sketchUndoBtn,_sketchClearBtn);
       const _sketchTopRight=mk("div",{display:"flex",alignItems:"center",gap:"8px",marginLeft:"auto"});
-      _sketchTopRight.append(_sketchSaveBtn,_sketchCloseBtn);
+
+      // Fullscreen toggle for sketch
+      let _sketchFullscreen=false;
+      const _sketchFsBtn=mk("button",{background:"none",border:"none",cursor:"pointer",
+        color:C.muted,padding:"2px 4px",outline:"none",display:"flex",alignItems:"center",
+        borderRadius:"4px",transition:"color .15s",flexShrink:"0"});
+      _sketchFsBtn.innerHTML=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
+      _sketchFsBtn.title="Toggle fullscreen sketch";
+      _sketchFsBtn.onmouseenter=()=>_sketchFsBtn.style.color="#fff";
+      _sketchFsBtn.onmouseleave=()=>_sketchFsBtn.style.color=C.muted;
+      let _sketchFsOrigParent=null;
+      let _sketchFsOrigZoom=1,_sketchFsOrigPanX=0,_sketchFsOrigPanY=0;
+      const _sketchFsExit=()=>{
+        _sketchFullscreen=false;
+        if(_sketchFsOrigParent) _sketchFsOrigParent.appendChild(_sketchOv);
+        _sketchOv.style.position="absolute";
+        _sketchOv.style.inset="0";
+        _sketchOv.style.zIndex="270";
+        _sketchToolbar.style.zoom="";
+        _sketchLayersPanel.style.zoom="";
+        _sketchTopBar.style.zoom="";
+        _sketchShortcutBar.style.zoom="";
+        _sketchCloseBtn.style.display="";
+        requestAnimationFrame(()=>_sketchDoFit());
+      };
+      _sketchFsBtn.onclick=()=>{
+        _sketchFullscreen=!_sketchFullscreen;
+        if(_sketchFullscreen){
+          _sketchFsOrigZoom=_sketchZoom;
+          _sketchFsOrigPanX=_sketchPanX;
+          _sketchFsOrigPanY=_sketchPanY;
+          _sketchFsOrigParent=_sketchOv.parentElement;
+          document.body.appendChild(_sketchOv);
+          _sketchOv.style.position="fixed";
+          _sketchOv.style.inset="0";
+          _sketchOv.style.zIndex="99999";
+          _sketchToolbar.style.zoom="2";
+          _sketchLayersPanel.style.zoom="2";
+          _sketchTopBar.style.zoom="2";
+          _sketchShortcutBar.style.zoom="2";
+          _sketchCloseBtn.style.display="none";
+          requestAnimationFrame(()=>_sketchDoFit());
+        } else {
+          _sketchFsExit();
+        }
+      };
+
+      _sketchTopRight.append(_sketchSaveBtn,_sketchFsBtn,_sketchCloseBtn);
       _sketchTopBar.append(_sketchTopCenter,_sketchTopRight);
 
       // ── Tool buttons ──────────────────────────────────────────────────────
@@ -2134,10 +2790,11 @@ app.registerExtension({
         return row;
       };
 
-      const _skSizeRow=_mkSliderRow("Size",1,200,8,(v)=>{
+      const _skSizeRow=_mkSliderRow("Size",1,500,8,(v)=>{
         _sketchSize=v;
-        _sketchSizeSlider.value=String(Math.min(v,200));_sketchSizeNumInp.value=String(v);
+        _sketchSizeSlider.value=String(Math.min(v,500));_sketchSizeNumInp.value=String(v);
       });
+      _skSizeRow.title="Brush size — [ smaller · ] larger  (Shift = ×10)";
       // Allow typing beyond slider max — number input has no hard cap
       _skSizeRow.querySelector("input[type=number]").removeAttribute("max");
       const _skSoftRow=_mkSliderRow("Hardness",0,100,100,(v)=>{ _sketchSoftness=1-v/100; });
@@ -2153,9 +2810,9 @@ app.registerExtension({
       const _sketchSetSize=(v)=>{
         v=Math.max(1,Math.min(2000,parseInt(v)||1));
         _sketchSize=v;
-        _sketchSizeSlider.value=String(Math.min(v,200));
+        _sketchSizeSlider.value=String(Math.min(v,500));
         _sketchSizeNumInp.value=String(v);
-        _skSizeRow._set(Math.min(v,200));
+        _skSizeRow._set(Math.min(v,500));
       };
       _sketchSizeSlider.oninput=()=>_sketchSetSize(_sketchSizeSlider.value);
       _sketchSizeNumInp.oninput=()=>_sketchSetSize(_sketchSizeNumInp.value);
@@ -2181,6 +2838,8 @@ app.registerExtension({
         _skFgSwatch.style.background=_sketchColor;
         _sketchColorSwatch.style.background=_sketchColor;
       };
+      // Release focus after picking so keyboard shortcuts keep working
+      _sketchColorNative.onchange=()=>{ _sketchColorNative.blur(); };
 
       // ── Stroke/Fill toggle ────────────────────────────────────────────────
       const _mkSFBtnInline=(lbl)=>{
@@ -3072,7 +3731,7 @@ app.registerExtension({
       };
       _mkZoomBtnHandler(_sketchZoomIn,1.25);
       _mkZoomBtnHandler(_sketchZoomOut,1/1.25);
-      _sketchZoomReset.onclick=()=>{
+      const _sketchDoFit=()=>{
         const vw=_sketchViewport.offsetWidth,vh=_sketchViewport.offsetHeight;
         const scale=Math.min(1,(vw-40)/_sketchCanvasW,(vh-40)/_sketchCanvasH);
         _sketchZoom=scale;
@@ -3080,6 +3739,7 @@ app.registerExtension({
         _sketchPanY=Math.round((vh-_sketchCanvasH*scale)/2);
         _sketchApplyTransform();
       };
+      _sketchZoomReset.onclick=_sketchDoFit;
 
       // Panning state
       let _sketchPanning=false,_sketchPanStartX=0,_sketchPanStartY=0,_sketchPanOX=0,_sketchPanOY=0;
@@ -3238,7 +3898,7 @@ app.registerExtension({
         if(_sketchTool!=="move") { _sketchCursorEl.innerHTML=""; _sketchCursorEl.style.display="block"; }
         const brushTools=["brush","eraser"];
         if(brushTools.includes(_sketchTool)){
-          const sz=Math.max(2,_sketchSize*_sketchZoom);
+          const sz=Math.max(2,(_sketchSize/2)*_sketchZoom);
           _sketchCursorEl.style.width=sz+"px";_sketchCursorEl.style.height=sz+"px";
           _sketchCursorEl.style.borderRadius="50%";
           _sketchCursorEl.style.background=_sketchTool==="eraser"?"rgba(255,255,255,.2)":"transparent";
@@ -3936,10 +4596,14 @@ app.registerExtension({
           return;
         }
         const tag=(e.target||{}).tagName||"";
-        if(tag==="INPUT"||tag==="TEXTAREA") return;
         if((e.ctrlKey||e.metaKey)&&(e.key==="z"||e.key==="Z")){
           e.preventDefault();e.stopPropagation();_sketchDoUndo();return;
         }
+        // Block shortcuts only when typing in a text field. Color picker and
+        // range sliders keep focus after use but don't need keyboard — let
+        // shortcuts (b/e/r/c/v…) keep working after picking a color.
+        const _it=(e.target||{}).type||"";
+        if((tag==="INPUT"&&_it!=="color"&&_it!=="range")||tag==="TEXTAREA") return;
         if(e.ctrlKey||e.metaKey||e.altKey) return;
         switch(e.key){
           case"b":case"B":e.preventDefault();e.stopPropagation();_sketchSetTool("brush");break;
@@ -3947,6 +4611,11 @@ app.registerExtension({
           case"r":case"R":e.preventDefault();e.stopPropagation();_sketchSetTool("rect");break;
           case"c":case"C":e.preventDefault();e.stopPropagation();_sketchSetTool("circle");break;
           case"v":case"V":e.preventDefault();e.stopPropagation();_sketchSetTool("move");break;
+          // Photoshop / Krita style brush-size shortcuts ( [ smaller, ] larger; shift = ×10 )
+          case"[":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-1);break;
+          case"]":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+1);break;
+          case"{":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-10);break;
+          case"}":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+10);break;
           case"Delete":case"Backspace":
             e.preventDefault();e.stopPropagation();
             if(_sketchLayers.length>1){
@@ -4103,6 +4772,7 @@ app.registerExtension({
         display:"none",flexDirection:"column",boxSizing:"border-box",
         opacity:"0",transition:"opacity 0.15s ease",
       });
+      _maskOv.setAttribute("tabindex","-1"); // focusable so keyboard shortcuts work
 
       // ── Shared state ──────────────────────────────────────────────────────
       let _maskMode="inpaint";   // "inpaint" | "outpaint"
@@ -4113,6 +4783,7 @@ app.registerExtension({
       let _maskHardness=1; // 1=hard, 0=fully soft
       let _maskDrawing=false;
       let _maskLastX=0,_maskLastY=0;
+      let _maskRectStart=null,_maskRectEnd=null; // marquee (rectangle select) drag corners, canvas coords
       let _maskCanvasW=512,_maskCanvasH=512;
       let _maskHistory=[];
       let _maskSourceImgEl=null;
@@ -4134,6 +4805,13 @@ app.registerExtension({
         transform:"translate(-50%,-50%)",
       });
       _maskCanvasWrap.appendChild(_maskCursor);
+
+      // Marquee (rectangle select) preview — inside the wrap so it scales with zoom
+      const _maskRectPreview=mk("div",{
+        position:"absolute",border:`2px dashed ${LIME}`,background:"rgba(240,255,65,.18)",
+        pointerEvents:"none",display:"none",zIndex:"11",boxSizing:"border-box",
+      });
+      _maskCanvasWrap.appendChild(_maskRectPreview);
 
       // Outpaint handles overlay (sits on top of canvas wrap, same coordinate space)
       const _opHandleOv=mk("div",{
@@ -4251,6 +4929,37 @@ app.registerExtension({
         for(let i=0;i<=steps;i++){const t=i/steps;_maskDraw(x1+t*(x2-x1),y1+t*(y2-y1));}
       };
 
+      // ── Marquee (rectangle select) — drag a box to mask a rectangular area ──
+      const _maskUpdateRectPreview=()=>{
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectPreview.style.display="none"; return; }
+        const x0=Math.min(_maskRectStart.x,_maskRectEnd.x);
+        const y0=Math.min(_maskRectStart.y,_maskRectEnd.y);
+        const w=Math.abs(_maskRectEnd.x-_maskRectStart.x);
+        const h=Math.abs(_maskRectEnd.y-_maskRectStart.y);
+        _maskRectPreview.style.display="block";
+        _maskRectPreview.style.left=x0+"px";_maskRectPreview.style.top=y0+"px";
+        _maskRectPreview.style.width=w+"px";_maskRectPreview.style.height=h+"px";
+      };
+      const _maskCommitRect=()=>{
+        _maskRectPreview.style.display="none";
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectStart=null;_maskRectEnd=null; return; }
+        const x0=Math.max(0,Math.min(_maskRectStart.x,_maskRectEnd.x));
+        const y0=Math.max(0,Math.min(_maskRectStart.y,_maskRectEnd.y));
+        const x1=Math.min(_maskCanvasW,Math.max(_maskRectStart.x,_maskRectEnd.x));
+        const y1=Math.min(_maskCanvasH,Math.max(_maskRectStart.y,_maskRectEnd.y));
+        _maskRectStart=null;_maskRectEnd=null;
+        const w=x1-x0,h=y1-y0;
+        if(w<1||h<1) return;
+        _maskSaveHistory();
+        const ctx=_maskCtx();
+        ctx.save();
+        ctx.globalCompositeOperation="source-over";
+        ctx.fillStyle="rgba(255,255,255,1)";
+        ctx.fillRect(x0,y0,w,h);
+        ctx.restore();
+        _maskComposite();
+      };
+
       // ── Top bar ───────────────────────────────────────────────────────────
       const _maskTopBar=mk("div",{
         display:"flex",alignItems:"center",gap:"6px",padding:"6px 10px",
@@ -4303,18 +5012,24 @@ app.registerExtension({
       };
       const _maskBrushBtn=_mkMaskToolBtn("●","Brush");
       const _maskEraserBtn=_mkMaskToolBtn("○","Eraser");
+      const _maskRectBtn=_mkMaskToolBtn("▭","Rect");
+      _maskRectBtn.title="Rectangle marquee — drag to mask a rectangular area [R]";
 
       const _maskSetTool=(t)=>{
         _maskTool=t;
         _maskBrushBtn._setActive(t==="brush");
         _maskEraserBtn._setActive(t==="eraser");
-        if(_maskMode==="inpaint") _maskViewport.style.cursor="none";
+        _maskRectBtn._setActive(t==="rect");
+        if(_maskMode==="inpaint") _maskViewport.style.cursor=t==="rect"?"crosshair":"none";
+        if(t==="rect") _maskCursor.style.display="none";
       };
       _maskBrushBtn.onclick=()=>_maskSetTool("brush");
       _maskEraserBtn.onclick=()=>_maskSetTool("eraser");
+      _maskRectBtn.onclick=()=>_maskSetTool("rect");
 
       // Brush size group — compact for single-row layout
       const _maskSizeLbl=mk("div",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});tx(_maskSizeLbl,"Size");
+      _maskSizeLbl.title="Brush size — [ smaller · ] larger  (Shift = larger steps)";
       const _maskSizeSlider=mk("input",{width:"60px",accentColor:LIME,flexShrink:"0"},{type:"range",min:"2",max:"500",step:"1",value:String(_maskSize)});
       const _maskSizeNum=mk("input",{
 width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
@@ -4349,7 +5064,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _maskHardNum.oninput=()=>_maskSyncHard(_maskHardNum.value);
 
       // Brush-only controls group (hidden in outpaint mode)
-      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
+      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_maskRectBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
 
       // Confirm / Cancel
       const _maskSpacer=mk("div",{flex:"1"});
@@ -4390,6 +5105,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _opHintBar.style.display=isInp?"none":"block";
         tx(_maskConfirmBtn,isInp?"Apply":"Apply Changes");
         _maskTopBar.append(_maskSpacer,_maskConfirmBtn,_maskCancelBtn);
+        // Reference panel is inpaint-only (outpaint workflow has no reference chain)
+        if(typeof _refPanel!=="undefined"&&_refPanel) _refPanel.style.display=isInp?"flex":"none";
       };
 
       // ── Outpaint controls bar ─────────────────────────────────────────────
@@ -4460,10 +5177,49 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
       const _opScaleLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
       tx(_opScaleLbl,"Scale by longer side");
-      _opScaleRow.append(_opScaleLbl,_opResLonger,_opResResultLbl);
+
+      // Size step (snap): 8px = fine Flux control, 64px = coarse steps that line up with
+      // video models like LTX 2.3 (so a Flux outpaint frame can feed straight into an LTX
+      // outpaint without the dimensions drifting). Applies to the scaled original AND the
+      // Top/Right/Bottom/Left padding, so the whole output lands on the chosen multiple.
+      if(S.opSnap!==64) S.opSnap=8;
+      const _opSnapDivider=mk("span",{width:"1px",height:"16px",background:C.border,flexShrink:"0"});
+      const _opSnapLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_opSnapLbl,"Snap");
+      const _opSnapWrap=mk("div",{display:"flex",gap:"3px",flexShrink:"0"});
+      const _opSnapEls={};
+      const _paintSnapPill=(el,on)=>{
+        el.style.background=on?LIME:C.bg2;
+        el.style.color=on?"#111":C.text;
+        el.style.border=`1px solid ${on?LIME:C.border}`;
+        el.style.fontWeight=on?"700":"400";
+      };
+      [8,64].forEach(step=>{
+        const el=mk("button",{
+          borderRadius:"5px",padding:"2px 7px",fontSize:"9px",cursor:"pointer",
+          transition:"all .14s",outline:"none",whiteSpace:"nowrap",
+        });
+        tx(el,`${step}px`);
+        _paintSnapPill(el,S.opSnap===step);
+        el.onclick=()=>{
+          if(S.opSnap===step) return;
+          S.opSnap=step; persist();
+          Object.keys(_opSnapEls).forEach(k=>_paintSnapPill(_opSnapEls[k],+k===step));
+          // Refresh both readouts: the badge (expanded-size mode) and the "→ W×H" preview
+          // (scale mode), so whichever is active reflects the new step immediately.
+          _opApplyBadgeState(); _opResRefresh();
+        };
+        _opSnapEls[step]=el;
+        _opSnapWrap.appendChild(el);
+      });
+      _opSnapLbl.title="Size step. 8px = fine control. 64px = coarse steps that match video models like LTX, so a Flux outpaint can feed straight into an LTX outpaint.";
+
+      _opScaleRow.append(_opScaleLbl,_opResLonger,_opResResultLbl,_opSnapDivider,_opSnapLbl,_opSnapWrap);
 
       const _opApplyBadgeState=()=>{
-        const w=_maskCanvasW+_opLeft+_opRight, h=_maskCanvasH+_opTop+_opBottom;
+        // Snap padding to the chosen size step so the badge shows exactly what Apply produces.
+        const _sn=(S.opSnap===64)?64:8, _snap=v=>Math.max(0,Math.round(v/_sn)*_sn);
+        const w=_maskCanvasW+_snap(_opLeft)+_snap(_opRight), h=_maskCanvasH+_snap(_opTop)+_snap(_opBottom);
         const hasExpand=w!==_maskCanvasW||h!==_maskCanvasH;
         if(_opUseExpandedSize){
           tx(_opDimsLbl,`${w}×${h}`);
@@ -4505,22 +5261,49 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _opResRefresh();
       };
 
+      // Feather width (px) the mask fades into the original at the seam.
+      // S.opFeather === 0 means "auto": the original min(cap, edge/div) heuristic.
+      // A user value overrides it, clamped so it never exceeds half the original region.
+      const _opFeatherPx=(edgeMin,autoCap,autoDiv)=>{
+        const auto=Math.floor(edgeMin/(autoDiv||6));
+        const base=(+S.opFeather>0)?+S.opFeather:Math.min(autoCap,auto);
+        return Math.max(1,Math.min(base,Math.floor(edgeMin/2)));
+      };
+
+      // Single source of truth for outpaint output size.
+      // Order matters: when "Scale by longer side" is on, the ORIGINAL image is scaled
+      // to the longer side FIRST, then the Top/Right/Bottom/Left padding is added to the
+      // already-scaled image. This matches the LTX 2.3 node (resize → pad), so the same
+      // inputs produce the same output size across both nodes. Without resize, padding is
+      // simply added to the original as-is.
       const _opCalcDims=()=>{
-        const curTop=Math.max(0,Math.round((+_opTopField._inp.value||0)/8)*8);
-        const curRight=Math.max(0,Math.round((+_opRightField._inp.value||0)/8)*8);
-        const curBottom=Math.max(0,Math.round((+_opBottomField._inp.value||0)/8)*8);
-        const curLeft=Math.max(0,Math.round((+_opLeftField._inp.value||0)/8)*8);
-        const expW=_maskCanvasW+curLeft+curRight;
-        const expH=_maskCanvasH+curTop+curBottom;
-        if(_opUseExpandedSize||expW<=0||expH<=0) return {w:expW,h:expH,resized:false};
+        const _sn=(S.opSnap===64)?64:8; // size step (fine 8 vs video/LTX 64)
+        const _snap=v=>Math.max(0,Math.round(v/_sn)*_sn);
+        const curTop=_snap(+_opTopField._inp.value||0);
+        const curRight=_snap(+_opRightField._inp.value||0);
+        const curBottom=_snap(+_opBottomField._inp.value||0);
+        const curLeft=_snap(+_opLeftField._inp.value||0);
+        const ow=_maskCanvasW, oh=_maskCanvasH;
+        if(_opUseExpandedSize||ow<=0||oh<=0){
+          const expW=ow+curLeft+curRight, expH=oh+curTop+curBottom;
+          return {w:expW,h:expH,resized:false};
+        }
         const longer=parseInt(_opResLonger.value)||0;
-        if(!longer) return {w:expW,h:expH,resized:false};
-        const ar=expW/expH;
-        let fw,fh;
-        if(expW>=expH){ fw=longer; fh=Math.round(longer/ar); }
-        else { fh=longer; fw=Math.round(longer*ar); }
-        fw=Math.max(16,Math.round(fw/16)*16); fh=Math.max(16,Math.round(fh/16)*16);
-        return {w:fw,h:fh,resized:true};
+        if(!longer){
+          const expW=ow+curLeft+curRight, expH=oh+curTop+curBottom;
+          return {w:expW,h:expH,resized:false};
+        }
+        // Scale the ORIGINAL to the longer side first (snap to the size step), then add
+        // padding. Snapping the scaled original to 64 is what makes the output line up
+        // with LTX, which also snaps to 64.
+        const ar=ow/oh;
+        let sw,sh;
+        if(ow>=oh){ sw=longer; sh=Math.round(longer/ar); }
+        else { sh=longer; sw=Math.round(longer*ar); }
+        sw=Math.max(_sn,Math.round(sw/_sn)*_sn); sh=Math.max(_sn,Math.round(sh/_sn)*_sn);
+        const fw=sw+curLeft+curRight;
+        const fh=sh+curTop+curBottom;
+        return {w:fw,h:fh,resized:true,scaledOrigW:sw,scaledOrigH:sh};
       };
       const _opResRefresh=()=>{
         const {w,h,resized}=_opCalcDims();
@@ -4544,12 +5327,30 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _opFieldsRow.append(_opTopField,_opRightField,_opBottomField,_opLeftField);
       _opRow1.append(_opExpandLbl,_opFieldsRow);
 
-      // ── Row 2: size badge + scale ─────────────────────────────────────────
+      // ── Feather control: how far the mask fades into the original at the seam ──
+      // 0 = Auto (the original heuristic). Higher = softer blend, fewer visible seams.
+      const _opFeatherRow=mk("div",{
+        display:"flex",alignItems:"center",gap:"6px",
+        border:`1px solid ${C.border}`,borderRadius:"6px",padding:"5px 10px",
+        background:C.bg1,
+      });
+      const _opFeatherLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_opFeatherLbl,"Seam feather");
+      const _opFeatherSlider=mk("input",{width:"82px",accentColor:LIME,flexShrink:"0"},
+        {type:"range",min:"0",max:"256",step:"4",value:String(+S.opFeather||0)});
+      const _opFeatherVal=mk("span",{fontSize:"9px",color:LIME,fontWeight:"700",whiteSpace:"nowrap",minWidth:"30px"});
+      const _opFeatherFmt=()=>{ const v=+S.opFeather||0; tx(_opFeatherVal, v>0?`${v}px`:"Auto"); };
+      _opFeatherFmt();
+      _opFeatherRow.title="How far the mask fades into the original at the seam. Higher = softer blend, fewer visible seams. 0 = Auto.";
+      _opFeatherSlider.oninput=()=>{ S.opFeather=+_opFeatherSlider.value||0; _opFeatherFmt(); persist(); };
+      _opFeatherRow.append(_opFeatherLbl,_opFeatherSlider,_opFeatherVal);
+
+      // ── Row 2: size badge + scale + feather ───────────────────────────────
       const _opRow2=mk("div",{
         display:"none",alignItems:"center",justifyContent:"center",gap:"10px",
         padding:"6px 16px 10px",borderTop:`1px solid rgba(255,255,255,.05)`,
       });
-      _opRow2.append(_opDimsLbl,_opScaleRow);
+      _opRow2.append(_opDimsLbl,_opScaleRow,_opFeatherRow);
       _opBar.append(_opRow1,_opRow2);
 
       // ── Outpaint drag handles (canvas-space, inside _opHandleOv) ─────────
@@ -4670,7 +5471,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _maskMode=m;
         _rebuildMaskTopBar();
         const isInp=m==="inpaint";
-        _maskViewport.style.cursor=isInp?"none":"default";
+        _maskViewport.style.cursor=isInp?(_maskTool==="rect"?"crosshair":"none"):"default";
         _maskDropZone.style.cursor=isInp?"none":"pointer";
         _maskCursor.style.display="none";
         _opShowHandles(!isInp);
@@ -4781,6 +5582,50 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       tx(_inpScaleLbl,"Scale by longer side");
       _inpScaleRow.append(_inpScaleLbl,_inpResLongerInp,_inpResResultLbl);
 
+      // ── Inpaint seam feather — how far the fill blends into the original ──
+      // Drives InpaintCropImproved.mask_blend_pixels (FKI:209). Higher = softer,
+      // less visible seam at the mask edge. Same control users know from outpaint.
+      const _inpFeatherRow=mk("div",{
+        display:"flex",alignItems:"center",gap:"6px",
+        border:`1px solid ${C.border}`,borderRadius:"6px",padding:"5px 10px",background:C.bg1,
+      });
+      const _inpFeatherLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_inpFeatherLbl,"Seam feather");
+      // 0 = Auto (node default, 32px). A user value overrides it. Node max is 64.
+      const _inpFeatherSlider=mk("input",{width:"82px",accentColor:LIME,flexShrink:"0"},
+        {type:"range",min:"0",max:"64",step:"4",value:"0"});
+      const _inpFeatherVal=mk("span",{fontSize:"9px",color:LIME,fontWeight:"700",whiteSpace:"nowrap",minWidth:"30px"});
+      const _inpFeatherFmt=()=>{ const v=+S.inpFeather||0; tx(_inpFeatherVal, v>0?`${v}px`:"Auto"); };
+      if(S.inpFeather===undefined) S.inpFeather=0;
+      S.inpFeather=Math.max(0,Math.min(64,+S.inpFeather||0)); // clamp any stale value from earlier builds
+      _inpFeatherSlider.value=String(S.inpFeather);
+      _inpFeatherFmt();
+      _inpFeatherRow.title="How far the generated fill blends into the original at the mask edge. Higher = softer, fewer visible seams. 0 = Auto.";
+      _inpFeatherSlider.oninput=()=>{ S.inpFeather=+_inpFeatherSlider.value||0; _inpFeatherFmt(); persist(); };
+      _inpFeatherRow.append(_inpFeatherLbl,_inpFeatherSlider,_inpFeatherVal);
+
+      // ── Inpaint denoise — how much of the masked area gets regenerated ──
+      // Drives KSampler.denoise (FKI:163). 100% (=1.0) = full repaint (the original
+      // behaviour, default). Lower keeps more of what's already under the mask, useful
+      // for subtle edits. Same control users know from I2I.
+      const _inpDenRow=mk("div",{
+        display:"flex",alignItems:"center",gap:"6px",
+        border:`1px solid ${C.border}`,borderRadius:"6px",padding:"5px 10px",background:C.bg1,
+      });
+      const _inpDenLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_inpDenLbl,"Change strength");
+      if(S.inpaintDenoise===undefined) S.inpaintDenoise=1.0;
+      S.inpaintDenoise=Math.max(0,Math.min(1,+S.inpaintDenoise));
+      const _inpDenSlider=mk("input",{width:"82px",accentColor:LIME,flexShrink:"0"},
+        {type:"range",min:"0",max:"100",step:"1",value:String(Math.round(S.inpaintDenoise*100))});
+      const _inpDenVal=mk("span",{fontSize:"9px",color:LIME,fontWeight:"700",whiteSpace:"nowrap",minWidth:"30px"});
+      const _inpDenFmt=()=>{ tx(_inpDenVal,`${Math.round((+S.inpaintDenoise)*100)}%`); };
+      _inpDenFmt();
+      _inpDenRow.title="How much of the masked area is regenerated. 100% fully repaints it (default); lower keeps more of the original content under the mask.";
+      _inpDenSlider.oninput=()=>{ S.inpaintDenoise=(parseInt(_inpDenSlider.value)||0)/100; _inpDenFmt(); persist(); };
+      _inpDenSlider.addEventListener("wheel",(e)=>{ e.preventDefault();e.stopPropagation(); });
+      _inpDenRow.append(_inpDenLbl,_inpDenSlider,_inpDenVal);
+
       const _inpCalcDims=()=>{
         const w=_maskCanvasW, h=_maskCanvasH;
         if(_inpUseOrigSize||!w||!h) return {w,h,resized:false};
@@ -4839,7 +5684,37 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         padding:"6px 16px 10px",borderTop:`1px solid rgba(255,255,255,.05)`,
         background:C.bg1,flexShrink:"0",
       });
-      _inpBar.append(_inpDimsLbl,_inpScaleRow);
+      _inpBar.append(_inpDimsLbl,_inpScaleRow,_inpFeatherRow,_inpDenRow);
+
+      // ── Reference image panel (reference-guided inpainting) ────────────────
+      // Floating card in the top-right of the canvas viewport. Inpaint mode only.
+      // Lets the user provide a second image the model references while filling the mask.
+      const _refPanel=mk("div",{
+        position:"absolute",top:"10px",right:"10px",zIndex:"20",
+        display:"flex",flexDirection:"column",gap:"4px",alignItems:"center",
+        padding:"8px",borderRadius:"10px",
+        background:"rgba(18,18,20,.82)",border:`1px solid ${C.border}`,
+        backdropFilter:"blur(6px)",boxShadow:"0 4px 16px rgba(0,0,0,.4)",
+      });
+      const _refPanelLbl=mk("div",{
+        fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center",
+      });
+      tx(_refPanelLbl,"Reference");
+      const _refPanelHint=mk("div",{
+        fontSize:"7px",color:C.muted,textAlign:"center",opacity:".7",lineHeight:"1.3",
+        maxWidth:"88px",
+      });
+      tx(_refPanelHint,"Optional — guides the fill");
+      const _refSlot=ImgSlot(true,(name)=>{
+        _paintRefName=name||null;
+        S.inpaintRefName=_paintRefName;persist();
+      },null);
+      // Compact the slot for the floating panel
+      try{ _refSlot.el.style.width="80px"; _refSlot.el.style.height="80px"; }catch(e){}
+      _refPanel.append(_refPanelLbl,_refSlot.el,_refPanelHint);
+      _maskViewport.appendChild(_refPanel);
+      if(_paintRefName){ try{ _refSlot._restorePreview(_paintRefName); }catch(e){} }
 
       _maskOv.append(_maskTopBar,_opHintBar,_maskViewport,_opBar,_inpBar,_maskErrBar);
 
@@ -4860,6 +5735,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       const _openMaskOv=(imgName,mode)=>{
+        // Re-sync inpaint sliders from state — covers values changed outside the editor
+        // (e.g. restored from a gallery image's metadata via "Load settings into UI").
+        _inpFeatherSlider.value=String(Math.max(0,Math.min(64,+S.inpFeather||0))); _inpFeatherFmt();
+        _inpDenSlider.value=String(Math.round(Math.max(0,Math.min(1,S.inpaintDenoise!==undefined?+S.inpaintDenoise:1))*100)); _inpDenFmt();
         _maskHistory=[];
         _opTop=0;_opRight=0;_opBottom=0;_opLeft=0;
         _opTopField._inp.value="0";_opRightField._inp.value="0";
@@ -4868,7 +5747,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // is irrelevant and confusing (shows as red overlay). Mask is rebuilt at Apply Changes.
         if(mode==="outpaint"){ _maskSavedData=null;_maskSavedW=0;_maskSavedH=0; }
         _opRow2.style.display="none";
+        _maskRectStart=null;_maskRectEnd=null;_maskRectPreview.style.display="none";
         _maskOv.style.display="flex";
+        _maskOv.focus();
         requestAnimationFrame(()=>_maskOv.style.opacity="1");
         _setMaskMode(mode||"inpaint");
         _maskSetTool("brush");_maskSyncSize(_maskSize);
@@ -4904,14 +5785,17 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       let _maskPanning=false;
       let _maskPanStartX=0,_maskPanStartY=0,_maskPanStartPX=0,_maskPanStartPY=0;
       let _maskSpaceDown=false;
+      // CAPTURE phase: another keydown listener (ComfyUI core / a plugin) swallows the Space
+      // keydown with stopImmediatePropagation before it reaches a bubbling listener here — so
+      // the space-pan never armed (only the keyup got through). Capturing grabs it first.
       document.addEventListener("keydown",e=>{
         if(_maskOv.style.display==="none") return;
-        if(e.code==="Space"&&e.target.tagName!=="INPUT"){ e.preventDefault(); _maskSpaceDown=true; _maskViewport.style.cursor="grab"; }
-      });
+        if(e.code==="Space"&&e.target.tagName!=="INPUT"){ e.preventDefault();e.stopPropagation(); _maskSpaceDown=true; _maskViewport.style.cursor="grab"; }
+      },{capture:true});
       document.addEventListener("keyup",e=>{
         if(_maskOv.style.display==="none") return;
         if(e.code==="Space"){ _maskSpaceDown=false; if(!_maskPanning) _maskViewport.style.cursor=_maskMode==="inpaint"?"none":"default"; }
-      });
+      },{capture:true});
 
       _maskViewport.addEventListener("wheel",(e)=>{
         e.preventDefault();
@@ -4940,6 +5824,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.button!==0||_maskMode!=="inpaint") return;
         const pos=_maskCanvasCoords(e);
         if(pos.x<0||pos.y<0||pos.x>_maskCanvasW||pos.y>_maskCanvasH) return;
+        if(_maskTool==="rect"){
+          _maskDrawing=true;
+          _maskRectStart={x:pos.x,y:pos.y};_maskRectEnd={x:pos.x,y:pos.y};
+          _maskUpdateRectPreview();
+          return;
+        }
         _maskSaveHistory();
         _maskDrawing=true;_maskLastX=pos.x;_maskLastY=pos.y;
         _maskDraw(pos.x,pos.y);
@@ -4954,6 +5844,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           return;
         }
         if(_maskMode!=="inpaint") return;
+        if(_maskTool==="rect"){
+          _maskCursor.style.display="none";
+          if(_maskDrawing&&_maskRectStart){
+            const pos=_maskCanvasCoords(e);
+            _maskRectEnd={x:Math.max(0,Math.min(_maskCanvasW,pos.x)),y:Math.max(0,Math.min(_maskCanvasH,pos.y))};
+            _maskUpdateRectPreview();
+          }
+          return;
+        }
         const {r}=_maskVpScale();
         if(e.clientX>=r.left&&e.clientY>=r.top&&e.clientX<=r.right&&e.clientY<=r.bottom){
           const pos=_maskCanvasCoords(e);
@@ -4972,7 +5871,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
 
       document.addEventListener("mouseup",()=>{
-        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?"none":"default");}
+        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?(_maskTool==="rect"?"crosshair":"none"):"default");}
+        if(_maskDrawing&&_maskTool==="rect") _maskCommitRect();
         _maskDrawing=false;
       });
 
@@ -4984,10 +5884,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.target.tagName==="INPUT") return;
         if(e.key==="b"||e.key==="B"){_setMaskMode("inpaint");_maskSetTool("brush");}
         if(e.key==="e"||e.key==="E"){_setMaskMode("inpaint");_maskSetTool("eraser");}
+        if(e.key==="r"||e.key==="R"){_setMaskMode("inpaint");_maskSetTool("rect");}
         if((e.ctrlKey||e.metaKey)&&e.key==="z") _maskUndo();
         if(e.key==="Escape") _maskCancelBtn.click();
         if(e.key==="[") _maskSyncSize(_maskSize-5);
         if(e.key==="]") _maskSyncSize(_maskSize+5);
+        if(e.key==="{") _maskSyncSize(_maskSize-25);
+        if(e.key==="}") _maskSyncSize(_maskSize+25);
       },{capture:true});
 
       // ── Confirm ───────────────────────────────────────────────────────────
@@ -4998,16 +5901,44 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _maskConfirmBtn.disabled=true;tx(_maskConfirmBtn,"Uploading…");
 
         if(_maskMode==="outpaint"){
+          const _sn=(S.opSnap===64)?64:8; // size step (fine 8 vs video/LTX 64)
           // Force-read all fields even if none were blurred
-          _opTop   =Math.max(0,Math.round((+_opTopField._inp.value   ||0)/8)*8);
-          _opRight =Math.max(0,Math.round((+_opRightField._inp.value ||0)/8)*8);
-          _opBottom=Math.max(0,Math.round((+_opBottomField._inp.value||0)/8)*8);
-          _opLeft  =Math.max(0,Math.round((+_opLeftField._inp.value  ||0)/8)*8);
+          _opTop   =Math.max(0,Math.round((+_opTopField._inp.value   ||0)/_sn)*_sn);
+          _opRight =Math.max(0,Math.round((+_opRightField._inp.value ||0)/_sn)*_sn);
+          _opBottom=Math.max(0,Math.round((+_opBottomField._inp.value||0)/_sn)*_sn);
+          _opLeft  =Math.max(0,Math.round((+_opLeftField._inp.value  ||0)/_sn)*_sn);
           if(_opTop===0&&_opRight===0&&_opBottom===0&&_opLeft===0){
             _maskConfirmBtn.disabled=false;tx(_maskConfirmBtn,"Apply Changes");
             _maskShowErr("Set at least one side to expand (Top/Right/Bottom/Left > 0) then click Apply Changes.");
             return;
           }
+
+          // Scale-by-longer-side: resize the ORIGINAL first, then pad — matching the LTX 2.3
+          // node so the same inputs give the same output size. We shrink _maskSourceImgEl (and
+          // _maskCanvasW/H) here, so the padding/mask/feather code below runs on the scaled
+          // image and the old letterbox path stays inactive (_opResW/H left empty).
+          if(!_opUseExpandedSize){
+            const _opLonger=parseInt(_opResLonger.value)||0;
+            if(_opLonger>0){
+              const ow=_maskCanvasW, oh=_maskCanvasH, ar=ow/oh;
+              let sw,sh;
+              if(ow>=oh){ sw=_opLonger; sh=Math.round(_opLonger/ar); }
+              else { sh=_opLonger; sw=Math.round(_opLonger*ar); }
+              sw=Math.max(_sn,Math.round(sw/_sn)*_sn); sh=Math.max(_sn,Math.round(sh/_sn)*_sn);
+              if(sw!==ow||sh!==oh){
+                const sC=document.createElement("canvas"); sC.width=sw; sC.height=sh;
+                sC.getContext("2d").drawImage(_maskSourceImgEl,0,0,sw,sh);
+                const sImg=new Image();
+                await new Promise(r=>{ sImg.onload=r; sImg.src=sC.toDataURL("image/png"); });
+                _maskSourceImgEl=sImg;
+                _maskCanvasW=sw; _maskCanvasH=sh;
+              }
+            }
+            // Original is already scaled — clear the target dims so the letterbox path below
+            // stays inactive. Padding is added to the scaled original as the final size.
+            _opResW.value=""; _opResH.value="";
+          }
+
           const newW=_maskCanvasW+_opLeft+_opRight;
           const newH=_maskCanvasH+_opTop+_opBottom;
 
@@ -5030,7 +5961,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           mskX.fillRect(_opLeft,_opTop,_maskCanvasW,_maskCanvasH);
           // Feather: gradient bites INTO the original f px — white(new)→black(orig) transition
           // This lets the model see original content at the boundary and blend naturally
-          const f=Math.min(48,Math.floor(Math.min(_maskCanvasW,_maskCanvasH)/6));
+          const f=_opFeatherPx(Math.min(_maskCanvasW,_maskCanvasH),48);
           const L=_opLeft,T=_opTop,R=_opLeft+_maskCanvasW,B=_opTop+_maskCanvasH;
           const fade=(x0,y0,x1,y1,gStartX,gStartY,gEndX,gEndY)=>{
             const g=mskX.createLinearGradient(gStartX,gStartY,gEndX,gEndY);
@@ -5166,7 +6097,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
                 L=_savedOpLeft; T=_savedOpTop;
                 R=W-_savedOpRight; B=H-_savedOpBottom;
               }
-              const feather=Math.min(128,Math.min(R-L,B-T)/4);
+              const feather=_opFeatherPx(Math.min(R-L,B-T),128,4);
 
               // Step 1: fill everything white (all new areas will be masked)
               ctx.fillStyle="#ffffff";
@@ -5593,8 +6524,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _seedLockedWarn.append(_seedLockedIcon,_seedLockedText,_seedLockedBtn);
 
       const _advRefresh=()=>{
-        advPanel.style.display=S.advancedUI?"flex":"none";
-        _seedLockedWarn.style.display=(!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
+        // UPSCALE has no sampler/seed controls at all, so keep them hidden there even when
+        // Advanced control is on (this runs on its own from the Settings toggle too).
+        const _upActive=(typeof activePill!=="undefined"&&activePill==="upscale");
+        advPanel.style.display=(!_upActive&&S.advancedUI)?"flex":"none";
+        _seedLockedWarn.style.display=(!_upActive&&!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
       };
       _advRefresh();
 
@@ -5647,7 +6581,50 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         resetBtn();
       };
-      genRow.append(genBtn,stopBtn);
+      // ── Batch split-button (T2I only): pick how many images per Generate ──
+      const _batchWrap=mk("div",{position:"relative",flexShrink:"0",display:"none"});
+      const _batchBtn=mk("button",{
+        background:LIME,color:"#111",border:"2px solid transparent",borderRadius:"8px",
+        height:"38px",padding:"0 8px 0 7px",marginLeft:"4px",fontSize:"11px",fontWeight:"700",
+        cursor:"pointer",outline:"none",display:"flex",alignItems:"center",gap:"3px",
+        transition:"background .2s,filter .15s",whiteSpace:"nowrap",
+      });
+      const _batchSetLabel=()=>{ _batchBtn.innerHTML=`×${S.batchCount||1} <span style="font-size:7px">▾</span>`; };
+      _batchSetLabel();
+      _batchBtn.title="Number of images per generation";
+      _batchBtn.onmouseenter=()=>{ if(!S.generating) _batchBtn.style.filter="brightness(1.08)"; };
+      _batchBtn.onmouseleave=()=>{ _batchBtn.style.filter=""; };
+
+      const _batchDrop=mk("div",{
+        position:"absolute",bottom:"calc(100% + 5px)",right:"0",
+        background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"8px",
+        display:"none",flexDirection:"column",zIndex:"200",overflow:"hidden",
+        boxShadow:"0 4px 20px rgba(0,0,0,.7)",minWidth:"96px",
+      });
+      let _batchDropOpen=false;
+      const _closeBatchDrop=()=>{ _batchDrop.style.display="none"; _batchDropOpen=false; };
+      [1,2,3,4].forEach(n=>{
+        const row=mk("div",{padding:"7px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer",
+          color:n===(S.batchCount||1)?LIME:C.text,display:"flex",alignItems:"center",gap:"7px",
+          transition:"background .1s,color .1s",userSelect:"none"});
+        tx(row,`${n} image${n>1?"s":""}`);
+        row.onmouseenter=()=>{ row.style.background="rgba(240,255,65,.1)"; };
+        row.onmouseleave=()=>{ row.style.background=""; };
+        row.onclick=(e)=>{ e.stopPropagation();
+          S.batchCount=n; persist(); _batchSetLabel();
+          [..._batchDrop.children].forEach((c,i)=>{ c.style.color=(i+1)===n?LIME:C.text; });
+          _closeBatchDrop();
+          if(typeof _refreshPaintBatchNote==="function") _refreshPaintBatchNote();
+        };
+        _batchDrop.appendChild(row);
+      });
+      _batchBtn.onclick=(e)=>{ e.stopPropagation();
+        _batchDropOpen=!_batchDropOpen; _batchDrop.style.display=_batchDropOpen?"flex":"none"; };
+      document.addEventListener("click",()=>{ if(_batchDropOpen) _closeBatchDrop(); });
+      _batchDrop.addEventListener("click",e=>e.stopPropagation());
+      _batchWrap.append(_batchBtn,_batchDrop);
+
+      genRow.append(genBtn,_batchWrap,stopBtn);
       // seedRow is prepended to genRow's parent in leftPanel.append below
 
       // ── LEFT PANEL ASSEMBLY ──────────────────────────────────────────────
@@ -5674,6 +6651,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
       const _fsTargetDims=_mkFsDimsLbl();
       const _fsSourceDims=_mkFsDimsLbl();
+      // Source badge is display-only (only Target drives size). Plain, no border/bg
+      // so it's clear it isn't clickable.
+      _fsSourceDims.style.background="transparent";
+      _fsSourceDims.style.border="none";
+      _fsSourceDims.style.color=C.muted;
 
       // ── Resize by longer side ─────────────────────────────────────────────
       // _fsUseOrigSize=true (default): badge LIME, resize row locked
@@ -5817,7 +6799,359 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       if(S.fsTarget) _fsTargetSlot._restorePreview(S.fsTarget);
       if(S.fsSource) _fsSourceSlot._restorePreview(S.fsSource);
 
-      leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
+      // ── POSE panel (RefControl, single-phase) ────────────────────────────────
+      // Pose image → DWPose skeleton (structure) + Reference image (appearance) →
+      // refcontrol poses LoRA → result. Output size from the active badge (default
+      // Pose) + optional "Scale by longer side" override — same UX as FACESWAP/EDIT.
+      const posePanel=mk("div",{display:"none",flexDirection:"column",gap:"6px"});
+
+      const _poseImgDims=_mkFsDimsLbl();
+      const _poseRefDims=_mkFsDimsLbl();
+
+      // Which slot drives the output size: always "pose" or "ref" (default ref).
+      // One badge is ALWAYS selected; the Scale field is always live and scales the
+      // selected image by its longer side. Picking a badge prefills the field with
+      // that image's longer side, so the default = the chosen image's native size.
+      // Output size always comes from the POSE image (so the DWPose skeleton and the
+      // generated result share the same aspect ratio). The Pose badge is a toggle:
+      //   active  -> use the pose image's native size, Scale field locked
+      //   off     -> Scale by longer side unlocks and scales the pose image
+      // The Reference badge only displays dims; it never drives the output size.
+      if(S.poseUseSizeSource!=="pose"&&S.poseUseSizeSource!==null) S.poseUseSizeSource="pose";
+
+      const _poseResizePreview=mk("span",{fontSize:"9px",fontWeight:"700",color:LIME,letterSpacing:".03em",whiteSpace:"nowrap"});
+      const _poseResizeLongerInp=NI("px",S.poseResizeLonger||1024,64,8192,8,v=>{
+        S.poseResizeLonger=Math.round(v)||1024;
+        _poseResizeUpdatePreview();
+        persist();
+      },52);
+
+      const _poseResizeRow=mk("div",{display:"none",alignItems:"center",gap:"6px",marginTop:"2px"});
+      const _poseResizeRowLbl=mk("span",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
+      tx(_poseResizeRowLbl,"Scale by longer side");
+      _poseResizeRow.append(_poseResizeRowLbl,_poseResizeLongerInp,_poseResizePreview);
+
+      function _poseResizeUpdatePreview(){
+        const dims=_poseImgDims._getDims();
+        if(S.poseResizeLonger>0&&dims.w&&dims.h){
+          const scale=S.poseResizeLonger/Math.max(dims.w,dims.h);
+          const nw=Math.round(dims.w*scale/16)*16;
+          const nh=Math.round(dims.h*scale/16)*16;
+          tx(_poseResizePreview,`→ ${nw}×${nh}`);
+        } else { tx(_poseResizePreview,""); }
+      }
+
+      // Pose badge active = native pose size (scale locked); off = scale unlocks and
+      // is prefilled with the pose image's longer side.
+      function _poseApplyBadges(){
+        const pd=_poseImgDims._getDims();
+        const active=S.poseUseSizeSource==="pose";
+        if(pd.w&&pd.h){
+          _poseImgDims.style.cursor="pointer";
+          if(active){
+            _poseImgDims.style.color=LIME; _poseImgDims.style.background="rgba(240,255,65,.13)";
+            _poseImgDims.style.borderColor="rgba(240,255,65,.5)";
+            _poseImgDims.title="Output uses the pose image's native size — click to unlock Scale by longer side";
+          } else {
+            _poseImgDims.style.color=C.text; _poseImgDims.style.background=C.bg3;
+            _poseImgDims.style.borderColor=C.borderH;
+            _poseImgDims.title="Click to use the pose image's native size (locks Scale)";
+          }
+        } else { _poseImgDims.style.cursor="default"; _poseImgDims.title=""; }
+        // Reference badge is display-only (never a size source): plain, no border/bg
+        // so it's visually clear it isn't clickable.
+        _poseRefDims.style.cursor="default"; _poseRefDims.title="";
+        _poseRefDims.style.color=C.muted; _poseRefDims.style.background="transparent"; _poseRefDims.style.border="none";
+
+        const locked=active;
+        _poseResizeRow.style.display=(pd.w&&pd.h)?"flex":"none";
+        _poseResizeRow.style.opacity=locked?"0.35":"1";
+        _poseResizeRow.style.pointerEvents=locked?"none":"auto";
+        if(_poseResizeLongerInp._inp) _poseResizeLongerInp._inp.disabled=locked;
+        _poseResizeUpdatePreview();
+      }
+
+      // Prefill the scale field with the pose image's longer side.
+      const _posePrefillScale=()=>{
+        const d=_poseImgDims._getDims();
+        if(d.w&&d.h){ const longer=Math.max(d.w,d.h); S.poseResizeLonger=longer; _poseResizeLongerInp.setVal(longer); persist(); }
+      };
+
+      const _poseImgDimsSet=_poseImgDims._set.bind(_poseImgDims);
+      _poseImgDims._set=(w,h)=>{ _poseImgDimsSet(w,h);
+        if(w&&h&&!(+S.poseResizeLonger>0)) _posePrefillScale();
+        _poseApplyBadges(); };
+      const _poseRefDimsSet=_poseRefDims._set.bind(_poseRefDims);
+      _poseRefDims._set=(w,h)=>{ _poseRefDimsSet(w,h); _poseApplyBadges(); };
+
+      // Pose badge toggles native-size <-> scale mode. Reference badge is not clickable.
+      _poseImgDims.onclick=()=>{ const d=_poseImgDims._getDims(); if(!d.w||!d.h) return;
+        if(S.poseUseSizeSource==="pose"){ S.poseUseSizeSource=null; if(!(+S.poseResizeLonger>0)) _posePrefillScale(); }
+        else { S.poseUseSizeSource="pose"; }
+        persist(); _poseApplyBadges(); };
+
+      const _poseSlotRow=mk("div",{display:"flex",gap:"10px",alignItems:"flex-start"});
+
+      const _poseImgCard=mk("div",{display:"flex",flexDirection:"column",gap:"3px",alignItems:"center"});
+      const _poseImgSlot=ImgSlot(false,(name)=>{
+        S.poseImage=name||null;
+        if(name){ _poseImgSlot.el.style.borderColor=""; tx(_poseImgLbl,"Pose"); _poseImgLbl.style.color=C.muted; }
+        persist();
+      },(w,h)=>_poseImgDims._set(w,h));
+      const _poseImgLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center"});
+      tx(_poseImgLbl,"Pose");
+      _poseImgCard.append(_poseImgSlot.el,_poseImgLbl,_poseImgDims);
+
+      const _poseRefCard=mk("div",{display:"flex",flexDirection:"column",gap:"3px",alignItems:"center"});
+      const _poseRefSlot=ImgSlot(false,(name)=>{
+        S.poseRef=name||null;
+        if(name){ _poseRefSlot.el.style.borderColor=""; tx(_poseRefLbl,"Reference"); _poseRefLbl.style.color=C.muted; }
+        persist();
+      },(w,h)=>_poseRefDims._set(w,h));
+      const _poseRefLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center"});
+      tx(_poseRefLbl,"Reference");
+      _poseRefCard.append(_poseRefSlot.el,_poseRefLbl,_poseRefDims);
+
+      const _poseSwapBtn=mk("button",{
+        background:"transparent",border:`1px solid ${C.border}`,borderRadius:"6px",
+        width:"24px",height:"24px",padding:"0",cursor:"pointer",color:C.muted,outline:"none",
+        flexShrink:"0",marginTop:"32px",
+        display:"flex",alignItems:"center",justifyContent:"center",lineHeight:"0",
+        transition:"border-color .15s,color .15s",
+      });
+      _poseSwapBtn.title="Swap Pose ↔ Reference";
+      _poseSwapBtn.innerHTML=`<svg viewBox="0 0 10 14" width="9" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 1L1 3.5L3 6"/><line x1="1" y1="3.5" x2="9" y2="3.5"/><path d="M7 8L9 10.5L7 13"/><line x1="9" y1="10.5" x2="1" y2="10.5"/></svg>`;
+      _poseSwapBtn.onmouseenter=()=>{_poseSwapBtn.style.borderColor=LIME;_poseSwapBtn.style.color=LIME;};
+      _poseSwapBtn.onmouseleave=()=>{_poseSwapBtn.style.borderColor=C.border;_poseSwapBtn.style.color=C.muted;};
+      _poseSwapBtn.onclick=()=>{
+        const np=S.poseImage,nr=S.poseRef;
+        S.poseImage=nr||null;S.poseRef=np||null;
+        _poseImgSlot._restorePreview(S.poseImage);
+        _poseRefSlot._restorePreview(S.poseRef);
+        const dp=_poseImgDims._getDims(),dr=_poseRefDims._getDims();
+        _poseImgDims._set(dr.w||0,dr.h||0);
+        _poseRefDims._set(dp.w||0,dp.h||0);
+        if(S.poseImage){ _poseImgSlot.el.style.borderColor=""; tx(_poseImgLbl,"Pose"); _poseImgLbl.style.color=C.muted; }
+        if(S.poseRef){ _poseRefSlot.el.style.borderColor=""; tx(_poseRefLbl,"Reference"); _poseRefLbl.style.color=C.muted; }
+        persist();
+      };
+
+      _poseSlotRow.append(_poseImgCard,_poseSwapBtn,_poseRefCard);
+
+      posePanel.append(_poseSlotRow,_poseResizeRow);
+
+      // Restore pose slots from state
+      if(S.poseImage) _poseImgSlot._restorePreview(S.poseImage);
+      if(S.poseRef)   _poseRefSlot._restorePreview(S.poseRef);
+
+      // ── UPSCALE PANEL ─────────────────────────────────────────────────────
+      // One image slot + a scale factor. The SeedVR2 upscaler needs no prompt and no
+      // resolution controls — the factor drives everything — so this panel stays minimal.
+      const upscalePanel=mk("div",{display:"none",flexDirection:"column",gap:"6px"});
+
+      const _upSlotRow=mk("div",{display:"flex",gap:"10px",alignItems:"flex-start"});
+      // Fixed to the slot's own width (88px, see ImgSlot) so nothing underneath can widen the
+      // card and re-centre the slot.
+      const _upSlotCard=mk("div",{display:"flex",flexDirection:"column",gap:"3px",
+        alignItems:"center",width:"88px",flexShrink:"0"});
+      // Clickable size badge — same pattern/behaviour as the I2I one: lime = use the source's
+      // own size (resize locked); click to unlock "Scale by longer side".
+      const _upDims=(()=>{
+        let _w=0,_h=0;
+        const el=mk("div",{
+          fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+          textAlign:"center",cursor:"pointer",display:"none",
+          borderRadius:"5px",padding:"2px 6px",boxSizing:"border-box",
+          background:"rgba(240,255,65,.13)",border:`1px solid rgba(240,255,65,.5)`,color:LIME,
+        });
+        el._getDims=()=>({w:_w,h:_h});
+        el._set=(w,h)=>{ _w=w;_h=h; if(w&&h){ tx(el,`${w}×${h}`);el.style.display="block"; } else el.style.display="none"; };
+        return el;
+      })();
+      const _upSlot=ImgSlot(false,(name)=>{
+        S.upscaleImage=name||null;
+        if(name){ _upSlot.el.style.borderColor=""; tx(_upSlotLbl,"Image"); _upSlotLbl.style.color=C.muted; }
+        _upRefreshPreview();
+        persist();
+      },(w,h)=>{ _upDims._set(w,h); _upApplyPreState(); _upRefreshPreview(); });
+      const _upSlotLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center"});
+      tx(_upSlotLbl,"Image");
+      // Badge stays centred under the slot like every other mode. Its "→ result" readout is
+      // absolutely positioned to the right of it, so it can't widen the card and shove the
+      // slot sideways (which is what happened when it was a normal flex sibling).
+      // NOTE: the readout must be a SIBLING of the badge, not a child — _upDims._set() writes
+      // via textContent, which would wipe any child element.
+      const _upBadgeRow=mk("div",{position:"relative",display:"flex",justifyContent:"center",width:"100%"});
+      const _upBadgeResult=mk("span",{
+        position:"absolute",top:"50%",transform:"translateY(-50%)",
+        fontSize:"9px",fontWeight:"700",color:LIME,
+        whiteSpace:"nowrap",pointerEvents:"none",
+      });
+      _upBadgeRow.append(_upDims,_upBadgeResult);
+      _upSlotCard.append(_upSlot.el,_upSlotLbl,_upBadgeRow);
+      // Park the readout just right of the (centred) badge. Measured at runtime because the
+      // badge's width depends on the dimensions text. Hidden until measurable — on a fresh
+      // load the panel is display:none, so offsetWidth is 0 and a naive placement would leave
+      // the readout at left:0, stacked on top of the badge.
+      const _upPlaceBadgeResult=()=>{
+        const bw=_upDims.offsetWidth||0;
+        const rw=_upBadgeRow.offsetWidth||0;
+        if(!bw||!rw){ _upBadgeResult.style.visibility="hidden"; return; }
+        _upBadgeResult.style.left=Math.round((rw-bw)/2+bw+6)+"px";
+        _upBadgeResult.style.visibility="";
+      };
+      // The panel starts hidden (and can be re-shown by switching pills), so measure whenever
+      // it actually gets a size instead of guessing a frame. Watch the badge too — its width
+      // changes with the dimensions text while the row stays a fixed 88px.
+      if(typeof ResizeObserver!=="undefined"){
+        try{
+          const _upRO=new ResizeObserver(()=>_upPlaceBadgeResult());
+          _upRO.observe(_upBadgeRow);
+          _upRO.observe(_upDims);
+        }catch(e){}
+      }
+
+      // Scale factor + resulting size preview
+      const _upCtrls=mk("div",{display:"flex",flexDirection:"column",gap:"6px",flex:"1",minWidth:"0"});
+      const _upFactorRow=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
+      // Fixed label width keeps this row and the VAE tile row below it left-aligned,
+      // so both dropdowns start at the same x regardless of label length.
+      const _UP_LBL_W="52px";
+      const _upFactorLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap",
+        width:_UP_LBL_W,flexShrink:"0"});
+      tx(_upFactorLbl,"Scale");
+      const UPSCALE_FACTORS=["2x","4x","6x","8x"];
+      // preferDown: this one sits near the TOP of the panel, so opening upward would run it
+      // off the node.
+      const _upFactorDD=DD(UPSCALE_FACTORS,`${S.upscaleFactor||2}x`,v=>{
+        S.upscaleFactor=parseInt(v)||2; _upRefreshPreview(); persist();
+      },true);
+      _upFactorDD.el.style.width="70px";
+      _upFactorRow.append(_upFactorLbl,_upFactorDD.el);
+
+      // VAE tile size — trades speed for VRAM. Smaller tiles decode in smaller chunks,
+      // which is what avoids OOM on low-VRAM cards during the tiled VAE decode.
+      // ComfyUI clamps overlap to tile_size/4 when tile < overlap*4, so 512/256/128 map
+      // to overlaps 128/64/32; we set both explicitly so the prompt is self-describing.
+      const _upTileRow=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
+      const _upTileLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap",
+        width:_UP_LBL_W,flexShrink:"0"});
+      tx(_upTileLbl,"VAE tile");
+      const UPSCALE_TILES=["512","256","128"];
+      const _upTileDD=DD(UPSCALE_TILES,String(S.upscaleTile||512),v=>{
+        S.upscaleTile=parseInt(v)||512; persist();
+      },true);
+      _upTileDD.el.style.width="70px";
+      // Info badge — "VAE tile" is jargon, so spell out what it actually does on hover.
+      _upTileRow.append(_upTileLbl,_upTileDD.el,mkInfoBtn(
+        "The image is encoded and decoded in square tiles instead of all at once. "+
+        "Smaller tiles use less VRAM but are a bit slower. Drop to 256 or 128 if the "+
+        "upscale runs out of memory. This also applies to the Upscale button in the other modes."
+      ));
+
+      _upCtrls.append(_upFactorRow,_upTileRow);
+      _upSlotRow.append(_upSlotCard,_upCtrls);
+
+      // ── Pre-resize (optional) — mirrors the I2I "size badge + scale by longer side" flow.
+      // SeedVR2 shines on SMALL inputs (it invents detail rather than just sharpening), so the
+      // source can be shrunk first: source → (pre-resize) → ×factor.
+      let _upUseOrigSize=(+S.upscalePreLonger<=0); // true = lime badge, resize locked
+
+      const _upResizePreview=mk("span",{fontSize:"9px",fontWeight:"700",color:LIME,letterSpacing:".03em",whiteSpace:"nowrap"});
+      const _upPreLongerInp=NI("px",S.upscalePreLonger||512,64,4096,8,v=>{
+        S.upscalePreLonger=Math.round(v)||512;
+        _upRefreshPreview();
+        persist();
+      },52);
+
+      const _upUseOrigNote=mk("div",{fontSize:"8px",color:LIME,display:"none",marginTop:"0"});
+      tx(_upUseOrigNote,"Using size from Image.");
+
+      const _upResizeRow=mk("div",{display:"flex",alignItems:"center",gap:"6px",marginTop:"2px"});
+      const _upResizeRowLbl=mk("span",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
+      tx(_upResizeRowLbl,"Scale by longer side");
+      _upResizeRow.append(_upResizeRowLbl,_upPreLongerInp,_upResizePreview);
+
+      // VAE tile size used by BOTH the UPSCALE mode and the quick-upscale button, so the
+      // VRAM setting picked in UPSCALE applies everywhere. Only 512/256/128 are offered.
+      const _upTileSize=()=>{
+        const t=parseInt(S.upscaleTile)||512;
+        return (t===128||t===256||t===512)?t:512;
+      };
+
+      // The "→ final size" readout lives next to whichever control drives it: the badge when
+      // using the image's own size, or the longer-side input when resizing first.
+      const _upRefreshPreview=()=>{
+        const d=_upDims._getDims();
+        const f=+S.upscaleFactor||2;
+        if(!d.w||!d.h){ tx(_upBadgeResult,""); tx(_upResizePreview,""); return; }
+        const pre=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+        let sw=d.w, sh=d.h;
+        if(pre>0){
+          const s=pre/Math.max(d.w,d.h);
+          sw=Math.max(16,Math.round(d.w*s)); sh=Math.max(16,Math.round(d.h*s));
+        }
+        const fw=sw*f, fh=sh*f;
+        const heavy=(fw*fh)>(3840*2160);
+        const warn=heavy?"Very large result — may be slow or run out of VRAM.":"";
+        const col=heavy?"#f0a040":LIME;
+        if(_upUseOrigSize){
+          tx(_upBadgeResult,`→ ${fw}×${fh}`);
+          _upBadgeResult.style.color=col; _upBadgeResult.title=warn;
+          tx(_upResizePreview,"");
+        } else {
+          tx(_upBadgeResult,"");
+          tx(_upResizePreview,`→ ${fw}×${fh}`);
+          _upResizePreview.style.color=col; _upResizePreview.title=warn;
+        }
+        // Re-park after the badge text (and therefore its width) changed.
+        requestAnimationFrame(_upPlaceBadgeResult);
+      };
+
+      const _upApplyPreState=()=>{
+        const d=_upDims._getDims();
+        if(!d.w||!d.h) return;
+        if(_upUseOrigSize){
+          _upDims.style.color=LIME;
+          _upDims.style.background="rgba(240,255,65,.13)";
+          _upDims.style.borderColor="rgba(240,255,65,.5)";
+          _upDims.title="Upscaling the image at its own size — click to shrink it first";
+          _upUseOrigNote.style.display="block";
+          _upResizeRow.style.opacity="0.35";
+          _upResizeRow.style.pointerEvents="none";
+          _upPreLongerInp._inp.disabled=true;
+        } else {
+          _upDims.style.color=C.text;
+          _upDims.style.background=C.bg3;
+          _upDims.style.borderColor=C.borderH;
+          _upDims.title="Click to use the image's own size";
+          _upUseOrigNote.style.display="none";
+          _upResizeRow.style.opacity="1";
+          _upResizeRow.style.pointerEvents="auto";
+          _upPreLongerInp._inp.disabled=false;
+          if(S.upscalePreLonger<=0){ S.upscalePreLonger=_upPreLongerInp.numVal||512; persist(); }
+        }
+        _upRefreshPreview();
+      };
+
+      _upDims.onclick=()=>{
+        const d=_upDims._getDims();
+        if(!d.w||!d.h) return;
+        _upUseOrigSize=!_upUseOrigSize;
+        if(_upUseOrigSize){ S.upscalePreLonger=0; persist(); }
+        _upApplyPreState();
+      };
+
+      upscalePanel.append(_upSlotRow,_upUseOrigNote,_upResizeRow);
+
+      if(S.upscaleImage) _upSlot._restorePreview(S.upscaleImage);
+      _upApplyPreState();
+      _upRefreshPreview();
+
+      leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,posePanel,upscalePanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
 
       // ── RIGHT PANEL — Preview area fills available height ──
       const rightPanel=mk("div",{flex:"1",minWidth:"0",display:"flex",flexDirection:"column",overflow:"hidden"});
@@ -5923,6 +7257,34 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         comparerGenImg.style.width=(comparerWrap.offsetWidth||620)+"px";
       };
 
+      // Activate the before/after comparer for a finished result. `afterUrl` is the
+      // generated image; the "before" depends on the mode (input image 1, or the POSE
+      // skeleton URL via `beforeUrlOverride`). Returns true if a comparer was shown,
+      // false for modes that have no before/after (e.g. plain T2I). Shared by both the
+      // saved (showFinal) and unsaved temp (showTemp) result paths.
+      // Resolve the comparer "before" URL for a mode (null = mode has no before/after).
+      const _comparerBeforeUrl=(snapMode,snapImg1,beforeUrlOverride)=>{
+        if(snapMode==="pose"&&beforeUrlOverride) return beforeUrlOverride; // DWPose skeleton
+        if(snapImg1 && (snapMode==="edit"||snapMode==="faceswap"||snapMode==="i2i"
+            ||snapMode==="sketch"||snapMode==="inpaint"||snapMode==="outpaint"
+            ||snapMode==="upscale")){
+          return api.apiURL(`/view?filename=${encodeURIComponent(snapImg1)}&type=input&subfolder=`);
+        }
+        return null;
+      };
+      const _applyComparer=(afterUrl,snapMode,snapImg1,beforeUrlOverride)=>{
+        const beforeUrl=_comparerBeforeUrl(snapMode,snapImg1,beforeUrlOverride);
+        if(!beforeUrl){ comparerWrap.style.display="none"; return false; }
+        finalImg.style.display="none";
+        comparerGenImg.src=afterUrl;
+        comparerGenImg.style.width=(previewBox.offsetWidth||620)+"px";
+        comparerBase.src=beforeUrl;
+        comparerWrap.style.display="block";
+        previewUseWrap.style.display="block";
+        _cmpSetPct(100);
+        return true;
+      };
+
       comparerWrap.addEventListener("mousedown",e=>{
         _cmpDragging=true;e.preventDefault();
       });
@@ -5942,7 +7304,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       // "Use as…" dropdown — top-right of previewBox, visible after generation
       const previewUseWrap=mk("div",{
-        position:"absolute",top:"10px",right:"10px",zIndex:"5",display:"none",
+        // zIndex above the Save button / auto-save toggle (both z6) so the "Use as…"
+        // dropdown, which lives inside this wrapper's stacking context, opens OVER them
+        // rather than behind. (A child's z-index can't escape its parent's stack level.)
+        position:"absolute",top:"10px",right:"10px",zIndex:"10",display:"none",
       });
       const previewUseBtn=mk("button",{
         background:"rgba(20,20,20,.88)",color:"rgba(255,255,255,.88)",
@@ -5961,12 +7326,14 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const previewUseDrop=mk("div",{
         position:"absolute",top:"calc(100% + 4px)",right:"0",
         background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"8px",
-        minWidth:"160px",overflow:"hidden",display:"none",zIndex:"200",
-        boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        minWidth:"150px",overflowY:"auto",overflowX:"hidden",display:"none",zIndex:"200",
+        maxHeight:"min(420px, 80vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,padding:"3px 0",
       });
-      const _mkPUSection=(label)=>{ const h=mk("div",{padding:"6px 12px 3px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none"});tx(h,label);return h; };
-      const _mkPUItem=(label,icon,fn)=>{ const row=mk("div",{padding:"7px 12px",fontSize:"10px",fontWeight:"500",color:C.text,cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",transition:"background .1s,color .1s",userSelect:"none"});const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});tx(ico,icon);const lbl=mk("span");tx(lbl,label);row.append(ico,lbl);row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};row.onclick=()=>{previewUseDrop.style.display="none";_puDropOpen=false;fn();};return row; };
-      const _mkPUDivider=()=>mk("div",{height:"1px",background:C.border,margin:"2px 0"});
+      // Compact rows so the whole list (incl. Pose) fits without overflowing.
+      const _mkPUSection=(label)=>{ const h=mk("div",{padding:"2px 12px 1px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none",lineHeight:"1.3"});tx(h,label);return h; };
+      const _mkPUItem=(label,icon,fn)=>{ const row=mk("div",{padding:"3px 12px",fontSize:"10px",fontWeight:"500",color:C.text,cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",transition:"background .1s,color .1s",userSelect:"none",lineHeight:"1.4"});const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});tx(ico,icon);const lbl=mk("span");tx(lbl,label);row.append(ico,lbl);row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};row.onclick=()=>{previewUseDrop.style.display="none";_puDropOpen=false;fn();};return row; };
+      const _mkPUDivider=()=>mk("div",{height:"1px",background:C.border,margin:"0"});
 
       const _getLastSrc=()=>_lastGenObj||(_galImages&&_galImages[0]);
       const _puUpload=async(fn)=>{ const v=_getLastSrc();if(!v)return;try{const n=await _uploadOutputToInput(v);fn(n);}catch(e){console.warn("[FluxKlein] use-as:",e);} };
@@ -5985,6 +7352,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkPUSection("Faceswap"),
         _mkPUItem("Target","◎",()=>_puUpload(n=>{setPill("faceswap");S.fsTarget=n;_fsTargetSlot._restorePreview(n);persist();})),
         _mkPUItem("Source","◈",()=>_puUpload(n=>{setPill("faceswap");S.fsSource=n;_fsSourceSlot._restorePreview(n);persist();})),
+        _mkPUDivider(),
+        _mkPUSection("Pose"),
+        _mkPUItem("Pose","◇",()=>_puUpload(n=>{setPill("pose");S.poseImage=n;_poseImgSlot._restorePreview(n);persist();})),
+        _mkPUItem("Reference","◈",()=>_puUpload(n=>{setPill("pose");S.poseRef=n;_poseRefSlot._restorePreview(n);persist();})),
+        _mkPUDivider(),
+        _mkPUSection("Upscale"),
+        _mkPUItem("Upscale slot","↑",()=>_puUpload(n=>{setPill("upscale");S.upscaleImage=n;_upSlot._restorePreview(n);persist();})),
       );
 
       let _puDropOpen=false;
@@ -6077,20 +7451,154 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const src=_getLastSrc();
         if(!src) return;
         _deleteImage(src,previewDelBtn,()=>{
+          _galNeedsRefresh=true;
+          // If we're viewing a batch, drop the deleted entry and stay in the batch
+          // (show the next image, or fall back to the placeholder when none remain).
+          if(_batchImgs.length){
+            _batchImgs.splice(_batchIdx,1);
+            if(_batchImgs.length){
+              _batchNav.style.display=_batchImgs.length>1?"flex":"none";
+              _batchShow(_batchIdx); // _batchShow wraps the index for us
+              return;
+            }
+            _batchNav.style.display="none"; _batchTemp=false;
+          }
           // Hide preview, show placeholder, clear _lastGenObj
           finalImg.src="";finalImg.style.display="none";
           comparerWrap.style.display="none";
           previewUseWrap.style.display="none";
           previewDelBtn.style.display="none";
+          previewSaveBtn.style.display="none";
           placeholder.style.display="flex";
           _lastGenObj=null;
-          _galNeedsRefresh=true;
+          _lastResultWasUpscale=false;
+          _pushOutput(null); // nothing shown → clear the downstream output
+          _refreshQuickUp();
         });
       };
 
       // Comparer activates automatically in EDIT mode after generation
 
-      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewDelBtn,progWrap);
+      // ── Save button (shown for unsaved temp results when auto-save is off) ──
+      const previewSaveBtn=mk("button",{
+        position:"absolute",bottom:"10px",right:"10px",zIndex:"6",
+        height:"28px",padding:"0 11px",borderRadius:"8px",
+        background:"rgba(240,255,65,.9)",border:"1px solid rgba(240,255,65,.5)",
+        color:"#111",cursor:"pointer",outline:"none",fontSize:"10px",fontWeight:"700",
+        letterSpacing:".04em",display:"none",alignItems:"center",gap:"5px",
+        backdropFilter:"blur(4px)",transition:"filter .15s",
+      });
+      previewSaveBtn.title="Save this image to the gallery";
+      previewSaveBtn.innerHTML=`<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg><span>Save</span>`;
+      previewSaveBtn.onmouseenter=()=>previewSaveBtn.style.filter="brightness(1.08)";
+      previewSaveBtn.onmouseleave=()=>previewSaveBtn.style.filter="";
+
+      // ── Auto-save toggle (compact pill, bottom-right, left of Save/Delete; T2I only) ──
+      // height matches previewSaveBtn (28px) so the bottom-right pill row lines up.
+      const autoSaveTog=mk("div",{
+        position:"absolute",bottom:"10px",right:"10px",zIndex:"6",display:"none",
+        alignItems:"center",gap:"6px",userSelect:"none",cursor:"pointer",
+        background:"rgba(20,20,20,.78)",border:"1px solid rgba(255,255,255,.18)",
+        borderRadius:"8px",height:"28px",padding:"0 9px",boxSizing:"border-box",
+        backdropFilter:"blur(4px)",
+      });
+      const _asTrack=mk("div",{width:"26px",height:"14px",borderRadius:"7px",position:"relative",
+        transition:"background .18s",flexShrink:"0"});
+      const _asThumb=mk("div",{position:"absolute",top:"2px",width:"10px",height:"10px",
+        borderRadius:"50%",transition:"left .18s,background .18s"});
+      _asTrack.appendChild(_asThumb);
+      const _asLbl=mk("span",{fontSize:"9px",fontWeight:"700",color:"rgba(255,255,255,.85)",
+        letterSpacing:".03em",whiteSpace:"nowrap"});
+      tx(_asLbl,"Auto-save");
+      autoSaveTog.append(_asTrack,_asLbl);
+      const _asApply=()=>{
+        const on=S.autoSave!==false;
+        _asTrack.style.background=on?"rgba(240,255,65,.85)":"rgba(255,255,255,.14)";
+        _asThumb.style.left=on?"14px":"2px";
+        _asThumb.style.background=on?"#111":"#888";
+        autoSaveTog.title=on?"Auto-save is on — every result is kept":"Auto-save is off — use Save to keep a result";
+      };
+      _asApply();
+      autoSaveTog.onclick=()=>{ S.autoSave=!(S.autoSave!==false); persist(); _asApply(); };
+
+      // ── Quick upscale (button + factor) — sits directly LEFT of the auto-save pill ──
+      // Upscales the image currently shown in the preview (in a batch, the selected one).
+      // Same pill styling as auto-save so the bottom-right cluster reads as one unit.
+      // Bottom-LEFT of the preview, same row/height as the auto-save + Save cluster on the
+      // right. The batch nav is centred, so nothing collides.
+      const quickUpWrap=mk("div",{
+        position:"absolute",bottom:"10px",left:"10px",zIndex:"6",display:"none",
+        alignItems:"center",gap:"7px",userSelect:"none",
+        background:"rgba(20,20,20,.78)",border:"1px solid rgba(255,255,255,.18)",
+        borderRadius:"8px",height:"28px",padding:"0 5px 0 9px",boxSizing:"border-box",
+        backdropFilter:"blur(4px)",
+      });
+      const quickUpBtn=mk("button",{
+        background:"transparent",border:"none",padding:"0",cursor:"pointer",outline:"none",
+        display:"flex",alignItems:"center",color:"rgba(255,255,255,.85)",
+        fontSize:"9px",fontWeight:"700",letterSpacing:".03em",whiteSpace:"nowrap",
+        transition:"color .15s",lineHeight:"1",
+      });
+      tx(quickUpBtn,"Upscale");
+      quickUpBtn.title="Upscale the image shown in the preview";
+      quickUpBtn.onmouseenter=()=>quickUpBtn.style.color=LIME;
+      quickUpBtn.onmouseleave=()=>quickUpBtn.style.color="rgba(255,255,255,.85)";
+      const quickUpDD=DD(["2x","4x","6x","8x"],`${S.quickUpscaleFactor||2}x`,v=>{
+        S.quickUpscaleFactor=parseInt(v)||2; persist();
+        if(typeof _quickUpUpdateDims==="function") _quickUpUpdateDims();
+      });
+      // DD's trigger is 28px tall by default — too tall for this compact pill. Shrink the
+      // trigger itself (not the wrapper) so its contents stay vertically centred.
+      quickUpDD.el.style.width="42px";
+      quickUpDD.el.style.flexShrink="0";
+      {
+        const _t=quickUpDD.el.firstChild;
+        if(_t){
+          _t.style.height="19px";
+          _t.style.padding="0 5px";
+          _t.style.borderRadius="5px";
+          const _txt=_t.firstChild;
+          if(_txt) _txt.style.fontSize="9px";
+        }
+      }
+      // Current size of the shown image → target size at the chosen factor. Without this it's
+      // easy to upscale an already-upscaled image again and hit a brutal resolution by accident.
+      const quickUpDims=mk("span",{
+        fontSize:"8px",color:"rgba(255,255,255,.5)",whiteSpace:"nowrap",letterSpacing:".02em",
+      });
+      quickUpWrap.append(quickUpBtn,quickUpDD.el,quickUpDims);
+
+      // Toggle sits flush right (right:10px) when there's no Save/Delete button, and
+      // shifts left (right:82px) only when one of them is shown, so it doesn't leave a
+      // gap where those buttons would be. Watch their display and reposition.
+      // The quick-upscale pill then tracks the auto-save pill, staying just left of it.
+      const _posAutoSaveTog=()=>{
+        // No button → flush right. Delete is a narrow icon (~28px); Save is a wider
+        // labelled button (~64px) — offset the toggle accordingly so there's no gap.
+        if(previewSaveBtn.style.display!=="none")      autoSaveTog.style.right="82px";
+        else if(previewDelBtn.style.display!=="none")  autoSaveTog.style.right="46px";
+        else                                           autoSaveTog.style.right="10px";
+        // The upscale pill sits in its own row ABOVE the bottom strip, flush to the right edge
+        // (NOT tracking auto-save — that shifts left when Save/Delete appear, which would drag
+        // the pill out of alignment with the right edge).
+      };
+      _posAutoSaveTog();
+      const _btnVisObserver=new MutationObserver(_posAutoSaveTog);
+      _btnVisObserver.observe(previewSaveBtn,{attributes:true,attributeFilter:["style"]});
+      _btnVisObserver.observe(previewDelBtn,{attributes:true,attributeFilter:["style"]});
+
+      // ── Send-downstream toggle (compact pill, bottom-LEFT of preview) ──────
+      // Mirrors the auto-save toggle's look. Controls whether a finished result is
+      // auto-sent to the node's IMAGE output (auto-running the connected graph) or
+      // just cached for the user's next manual Run. Lives bottom-left so it sits near
+      // Generate and the Save/auto-save controls without overlapping them (those are
+      // bottom-right). Visible in every mode.
+      // No "Send result" toggle: the wire itself is the switch. If the IMAGE output is
+      // connected, the result flows downstream; if nothing is connected, nothing is sent.
+      // This matches how all of ComfyUI's node pipelines behave — no hidden "connected but
+      // inactive" state to confuse the user.
+
+      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,quickUpWrap,autoSaveTog,progWrap);
       rightPanel.appendChild(previewBox);
 
       mainRow.append(leftPanel,rightPanel);
@@ -6101,18 +7609,21 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const promptCap=cap("Prompt");
 
       // ── LoRA overlay ──────────────────────────────────────────────────────
+      // Overlay covers the node widget (like the prompt/sketch overlays), not the whole screen.
       const _ulOverlay=mk("div",{
-        position:"fixed",inset:"0",zIndex:"99998",display:"none",
+        position:"absolute",inset:"0",zIndex:"250",display:"none",
         alignItems:"center",justifyContent:"center",
+        padding:"14px",boxSizing:"border-box",
       });
-      const _ulBg=mk("div",{position:"absolute",inset:"0",background:"rgba(0,0,0,.7)"});
+      const _ulBg=mk("div",{position:"absolute",inset:"0",background:"rgba(0,0,0,.6)"});
       const _ulPanel=mk("div",{
         position:"relative",
         background:"linear-gradient(145deg,#111 0%,#0d0d0d 100%)",
         border:`1px solid rgba(240,255,65,.18)`,
-        borderRadius:"16px",padding:"20px 22px 22px",width:"520px",
+        borderRadius:"16px",padding:"18px 20px 20px",width:"100%",maxWidth:"560px",
+        maxHeight:"100%",
         boxShadow:"0 20px 60px rgba(0,0,0,.95),inset 0 1px 0 rgba(255,255,255,.04)",
-        display:"flex",flexDirection:"column",gap:"16px",
+        display:"flex",flexDirection:"column",gap:"14px",boxSizing:"border-box",
       });
       const _ulPHdr=mk("div",{display:"flex",alignItems:"center",gap:"8px"});
       const _ulPTitle=mk("div",{fontSize:"12px",fontWeight:"700",color:"#fff",flex:"1",
@@ -6123,8 +7634,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       tx(_ulPClose,"×");
       _ulPClose.onmouseenter=()=>_ulPClose.style.color="#fff";
       _ulPClose.onmouseleave=()=>_ulPClose.style.color=C.muted;
-      _ulPClose.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
-      _ulBg.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
+      const _ulCloseFn=()=>{ _ulOverlay.style.display="none"; };
+      _ulPClose.onclick=_ulCloseFn;
+      _ulBg.onclick=_ulCloseFn;
       const _ulRefreshBtn=mk("button",{background:"none",border:"none",cursor:"pointer",
         color:C.muted,fontSize:"13px",lineHeight:"1",padding:"0 6px 0 0",outline:"none",flexShrink:"0"});
       tx(_ulRefreshBtn,"↻");
@@ -6134,35 +7646,67 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulRefreshBtn.onclick=()=>{ tx(_ulRefreshBtn,"↻"); _loadModels(); };
       _ulPHdr.append(_ulPTitle,_ulRefreshBtn,_ulPClose);
       const _ulPSub=mk("div",{width:"100%",height:"1px",background:"rgba(240,255,65,.10)",marginTop:"-6px"});
-      const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px"});
+      const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px",
+        overflowY:"auto",overflowX:"hidden",flex:"1 1 auto",minHeight:"0",paddingRight:"4px"});
+
+      const _UL_DEFAULT=3;   // default number of LoRA slots
+      const _UL_MAX=6;       // maximum slots the user can add
 
       const _mkULRow=(idx)=>{
-        const row=mk("div",{display:"flex",flexDirection:"column",gap:"4px"});
-        const rowLbl=mk("div",{fontSize:"7px",color:"rgba(240,255,65,.5)",fontWeight:"700",
-          letterSpacing:".1em",textTransform:"uppercase"});
-        tx(rowLbl,`SLOT ${idx+1}`);
-        const rowCtrl=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
-
-        // Trigger words area — shown below the control row
-        const trigRow=mk("div",{display:"none",flexDirection:"column",gap:"5px",
-          marginTop:"2px",padding:"8px 10px",background:"rgba(240,255,65,.04)",
-          border:`1px solid rgba(240,255,65,.12)`,borderRadius:"8px",
+        const row=mk("div",{display:"flex",flexDirection:"column",gap:"6px",
+          paddingBottom:"12px",borderBottom:`1px solid rgba(255,255,255,.06)`});
+        const rowCtrl=mk("div",{display:"flex",alignItems:"center",gap:"7px"});
+        // Slot number badge — sits in front of the dropdown
+        const _rowNum=mk("span",{
+          display:"inline-flex",alignItems:"center",justifyContent:"center",
+          width:"17px",height:"17px",borderRadius:"50%",fontSize:"8px",fontWeight:"700",
+          background:"rgba(240,255,65,.1)",color:LIME,flexShrink:"0",
         });
-        const trigTopRow=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
-        const trigLbl=mk("div",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
-        tx(trigLbl,"Trigger words:");
+        tx(_rowNum,String(idx+1));
+
+        // Enable/disable toggle — lets the user keep a LoRA loaded but inactive,
+        // instead of zeroing its strength. Sits at the front of the row.
+        const _enInit=S.userLoras[idx].enabled!==false;
+        const enTog=mk("div",{
+          width:"30px",height:"16px",borderRadius:"8px",position:"relative",
+          cursor:"pointer",flexShrink:"0",transition:"background .18s",
+          background:_enInit?"rgba(240,255,65,.85)":"rgba(255,255,255,.13)",
+        });
+        enTog.title="Toggle this LoRA on/off (keeps it loaded when off)";
+        const enThumb=mk("div",{position:"absolute",top:"2px",left:_enInit?"16px":"2px",
+          width:"12px",height:"12px",borderRadius:"50%",
+          background:_enInit?"#111":"#888",transition:"left .18s,background .18s"});
+        enTog.appendChild(enThumb);
+
+        // Trigger words area — shown below the control row (subtle, not a heavy block).
+        // paddingLeft aligns it under the dropdown: badge(17)+gap(7).
+        const trigRow=mk("div",{display:"none",flexDirection:"column",gap:"6px",
+          marginTop:"1px",paddingLeft:"24px",
+        });
+        const trigTopRow=mk("div",{display:"flex",alignItems:"baseline",gap:"6px"});
+        const trigLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,whiteSpace:"nowrap",
+          flexShrink:"0",letterSpacing:".06em",textTransform:"uppercase",opacity:".8"});
+        tx(trigLbl,"Trigger");
         const trigVal=mk("div",{fontSize:"10px",color:LIME,flex:"1",minWidth:"0",
           wordBreak:"break-word",lineHeight:"1.4"});
         tx(trigVal,"—");
-        trigTopRow.append(trigLbl,trigVal);
+        // Edit pencil — shown only when a trigger value exists, toggles the input row
+        const trigEditBtn=mk("button",{
+          background:"none",border:"none",cursor:"pointer",color:C.muted,
+          padding:"0 2px",lineHeight:"1",flexShrink:"0",outline:"none",
+          transition:"color .15s",display:"none",fontSize:"10px",
+        });
+        trigEditBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>`;
+        trigEditBtn.title="Edit trigger words";
+        trigEditBtn.onmouseenter=()=>trigEditBtn.style.color=LIME;
+        trigEditBtn.onmouseleave=()=>trigEditBtn.style.color=C.muted;
+        trigTopRow.append(trigLbl,trigVal,trigEditBtn);
 
         // Custom trigger input row
-        const trigCustomRow=mk("div",{display:"flex",alignItems:"center",gap:"5px",marginTop:"2px"});
-        const trigCustomLbl=mk("div",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
-        tx(trigCustomLbl,"Custom:");
+        const trigCustomRow=mk("div",{display:"flex",alignItems:"center",gap:"5px"});
         const trigCustomInp=mk("input",{
-          flex:"1",background:"rgba(255,255,255,.06)",border:`1px solid rgba(255,255,255,.12)`,
-          borderRadius:"5px",color:C.text,fontSize:"10px",padding:"3px 7px",
+          flex:"1",background:"rgba(255,255,255,.04)",border:`1px solid rgba(255,255,255,.1)`,
+          borderRadius:"6px",color:C.text,fontSize:"10px",padding:"5px 9px",
           outline:"none",transition:"border-color .15s",
         },{type:"text",placeholder:"Add custom trigger words…"});
         trigCustomInp.onfocus=()=>trigCustomInp.style.borderColor=LIME;
@@ -6180,14 +7724,24 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(!name||name==="none") return;
           const txt=trigCustomInp.value.trim();
           await _saveCustomTrigger(name,txt);
-          // Update displayed value and clear input field
+          // Update displayed value and collapse the input row
           tx(trigVal,txt||"—");
           trigCustomInp.value="";
           trigSaveBtn.style.color=LIME; tx(trigSaveBtn,"Saved ✓");
           setTimeout(()=>{ trigSaveBtn.style.color=C.muted; tx(trigSaveBtn,"Save"); },1500);
+          _setTrigEditMode(false);
         };
-        trigCustomRow.append(trigCustomLbl,trigCustomInp,trigSaveBtn);
+        trigCustomRow.append(trigCustomInp,trigSaveBtn);
         trigRow.append(trigTopRow,trigCustomRow);
+
+        // The input row is never shown automatically — only after clicking the pencil.
+        // The trigger value (or "—") is always visible under the dropdown, so the user
+        // already sees whether one is set; the pencil just opens the editor.
+        const _setTrigEditMode=(editing)=>{
+          trigCustomRow.style.display=editing?"flex":"none";
+          trigEditBtn.style.display=editing?"none":"inline-flex";
+        };
+        trigEditBtn.onclick=()=>{ trigCustomInp.value=(trigVal.textContent==="—"||trigVal.textContent==="…")?"":trigVal.textContent; _setTrigEditMode(true); trigCustomInp.focus(); };
 
         // Load and display trigger words when lora changes
         const _refreshTrigWords=async(loraName)=>{
@@ -6207,46 +7761,114 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               tx(trigVal,(d.ok&&d.triggers?.length)?d.triggers.join(", "):"—");
             }catch(e){ tx(trigVal,"—"); }
           }
+          // Collapse to display mode if a value exists, else show the input
+          _setTrigEditMode(false);
         };
 
         const ulDD=DD(["none"],"none",v=>{
           const has=v&&v!=="none";
           S.userLoras[idx].name=has?v:"";
-          if(!has){ S.userLoras[idx].strength=0; ulStr.value="0"; }
-          else if(S.userLoras[idx].strength===0){ S.userLoras[idx].strength=1; ulStr.value="1"; }
+          if(!has){
+            S.userLoras[idx].strength=0; ulStr.value="0";
+          } else {
+            // Selecting a LoRA: default to 1 only when strength is unset/zero
+            // (negative values are valid — concept sliders — so keep those),
+            // then always sync the input to the stored value, since an empty slot
+            // shows "0" while its state strength may already be 1.
+            const cur=+(S.userLoras[idx].strength);
+            if(!isFinite(cur)||cur===0) S.userLoras[idx].strength=1;
+            ulStr.value=String(S.userLoras[idx].strength);
+          }
           _ulUpdateBtn();persist();
           _refreshTrigWords(v);
         });
         ulDD.el.style.flex="1";ulDD.el.style.minWidth="0";
 
+        // type:"text" + inputmode:"decimal" so the numpad "." is accepted regardless
+        // of OS locale (type:"number" rejects "." on comma-locales). _pf() parses both.
         const ulStr=mk("input",{
-          width:"44px",textAlign:"center",background:"rgba(255,255,255,.06)",
-          border:`1px solid rgba(255,255,255,.1)`,borderRadius:"6px",
-          color:LIME,fontSize:"10px",fontWeight:"700",
-          padding:"5px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
-        },{type:"number",step:"0.05",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
-        ulStr.onfocus=()=>ulStr.style.borderColor=LIME;
-        ulStr.onblur=()=>{ S.userLoras[idx].strength=isNaN(+ulStr.value)?1:+ulStr.value;
+          width:"46px",textAlign:"center",background:"rgba(255,255,255,.05)",
+          border:`1px solid rgba(255,255,255,.1)`,borderRadius:"7px",
+          color:LIME,fontSize:"11px",fontWeight:"700",cursor:"ew-resize",
+          padding:"6px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
+        },{type:"text",inputMode:"decimal",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
+        ulStr.onfocus=()=>{ ulStr.style.borderColor=LIME; ulStr.select(); };
+        ulStr.onblur=()=>{ const p=_pf(ulStr.value); S.userLoras[idx].strength=isNaN(p)?1:p;
           ulStr.value=String(S.userLoras[idx].strength);persist(); };
-        ulStr.oninput=()=>{ S.userLoras[idx].strength=+ulStr.value||0;persist(); };
+        ulStr.oninput=()=>{ S.userLoras[idx].strength=_pf(ulStr.value)||0;persist(); };
 
-        const ulClr=mk("button",{
-          background:"rgba(255,80,80,.08)",border:"1px solid rgba(255,80,80,.25)",borderRadius:"6px",
-          cursor:"pointer",color:"rgba(255,100,100,.7)",fontSize:"9px",fontWeight:"700",
-          padding:"5px 8px",outline:"none",transition:"all .15s",flexShrink:"0",
-        });
-        tx(ulClr,"CLR");
-        ulClr.onmouseenter=()=>{ ulClr.style.background="rgba(255,80,80,.18)";ulClr.style.color="#ff6666"; };
-        ulClr.onmouseleave=()=>{ ulClr.style.background="rgba(255,80,80,.08)";ulClr.style.color="rgba(255,100,100,.7)"; };
-        ulClr.onclick=()=>{
-          S.userLoras[idx]={name:"",strength:0};ulDD.set("none");ulStr.value="0";
-          _ulUpdateBtn();persist();
-          trigRow.style.display="none";
+        // Drag-on-number: hold and drag horizontally to scrub the strength value,
+        // like native ComfyUI number widgets. A plain click (no drag) still focuses
+        // the field for typing — we only hijack the pointer once a real drag starts.
+        (()=>{
+          let armed=false,dragging=false,justDragged=false,startX=0,startVal=0,pid=0;
+          const STEP=0.01;       // value change per pixel
+          const THRESHOLD=3;     // px before it counts as a drag (vs a click)
+          ulStr.addEventListener("pointerdown",(e)=>{
+            armed=true;dragging=false;startX=e.clientX;pid=e.pointerId;
+            startVal=_pf(ulStr.value); if(isNaN(startVal)) startVal=0;
+            // Capture the pointer up front so every move/up is delivered even once the
+            // cursor leaves this 46px-wide box. Without it, pre-threshold pointermove
+            // only fires while over the field, so fast or edge-started drags exit the
+            // box before crossing THRESHOLD and the scrub silently no-ops (the "sometimes
+            // works" bug). Capture doesn't preventDefault, so a plain click still focuses
+            // the field for typing; the drag only kicks in past THRESHOLD.
+            try{ ulStr.setPointerCapture(pid); }catch(_){}
+          });
+          ulStr.addEventListener("pointermove",(e)=>{
+            if(!armed) return;
+            const dx=e.clientX-startX;
+            if(!dragging){
+              if(Math.abs(dx)<THRESHOLD) return; // still within click tolerance
+              dragging=true;
+              if(document.activeElement===ulStr) ulStr.blur(); // leave edit mode when a drag begins
+            }
+            let v=startVal+dx*STEP;
+            v=Math.round(v*100)/100;
+            ulStr.value=String(v);
+            S.userLoras[idx].strength=v; persist();
+          });
+          ulStr.addEventListener("pointerup",()=>{
+            if(!armed) return;
+            armed=false;
+            try{ ulStr.releasePointerCapture(pid); }catch(_){} // always release (captured on every pointerdown)
+            if(dragging){
+              ulStr.blur();           // committed via drag — don't enter edit mode
+              justDragged=true;       // swallow the trailing click
+              setTimeout(()=>{ justDragged=false; },0);
+            }
+            dragging=false;
+          });
+          ulStr.addEventListener("pointercancel",()=>{ try{ ulStr.releasePointerCapture(pid); }catch(_){} armed=false;dragging=false; });
+          // Swallow the click that immediately follows a real drag (so it doesn't focus)
+          ulStr.addEventListener("click",(e)=>{ if(justDragged){ e.preventDefault();e.stopPropagation(); } });
+        })();
+
+        // Reflect the slot's enabled state: move the switch and dim the controls
+        // when off (values are kept — only generation skips a disabled slot).
+        // To fully empty a slot, set the dropdown to "none" (handled in ulDD onChange).
+        const _applyEnabled=()=>{
+          const en=S.userLoras[idx].enabled!==false;
+          enTog.style.background=en?"rgba(240,255,65,.85)":"rgba(255,255,255,.13)";
+          enThumb.style.left=en?"16px":"2px";
+          enThumb.style.background=en?"#111":"#888";
+          const op=en?"1":"0.4";
+          _rowNum.style.opacity=op; ulDD.el.style.opacity=op;
+          ulStr.style.opacity=op; trigRow.style.opacity=op;
+        };
+        enTog.onclick=()=>{
+          S.userLoras[idx].enabled=!(S.userLoras[idx].enabled!==false);
+          _applyEnabled();_ulUpdateBtn();persist();
         };
 
-        rowCtrl.append(ulDD.el,ulStr,ulClr);
-        row.append(rowLbl,rowCtrl,trigRow);
+        rowCtrl.append(_rowNum,ulDD.el,ulStr,enTog);
+        row.append(rowCtrl,trigRow);
         row._dd=ulDD;row._str=ulStr;
+        // Clear the slot's UI completely, including the trigger row (used on restore).
+        row._reset=()=>{ ulDD.set("none"); ulStr.value="0"; trigRow.style.display="none"; _applyEnabled(); };
+        row._applyEnabled=_applyEnabled;
+        row._refreshTrig=_refreshTrigWords;
+        _applyEnabled();
 
         // Restore trigger words display if lora already selected
         if(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"){
@@ -6254,8 +7876,92 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         return row;
       };
-      const _ulRowEls=[_mkULRow(0),_mkULRow(1),_mkULRow(2)];
-      _ulRowEls.forEach(r=>_ulRows.appendChild(r));
+      // Dynamic LoRA slots: default 3, user can add up to _UL_MAX.
+      let _ulRowEls=[];
+      let _ulAddBtn=null, _ulRemoveBtn=null;  // assigned below; declared here for _ulRebuildRows
+      const _ulSyncBtnRow=()=>{
+        if(_ulAddBtn) _ulAddBtn.style.display=S.userLoras.length>=_UL_MAX?"none":"flex";
+        if(_ulRemoveBtn) _ulRemoveBtn.style.display=S.userLoras.length>_UL_DEFAULT?"flex":"none";
+      };
+      // Normalize older saved slots that predate the enable/disable toggle so every
+      // slot carries an explicit `enabled` flag (missing `enabled` is treated as on).
+      S.userLoras=(S.userLoras||[]).map(l=>({name:l.name||"",strength:l.strength===undefined?1.0:l.strength,enabled:l.enabled!==false}));
+      // Clamp restored state to [_UL_DEFAULT, _UL_MAX]
+      while(S.userLoras.length<_UL_DEFAULT) S.userLoras.push({name:"",strength:1.0,enabled:true});
+      if(S.userLoras.length>_UL_MAX) S.userLoras.length=_UL_MAX;
+
+      const _ulRebuildRows=()=>{
+        _ulRows.innerHTML="";
+        _ulRowEls=S.userLoras.map((_,i)=>_mkULRow(i));
+        _ulRowEls.forEach(r=>_ulRows.appendChild(r));
+        _ulSyncBtnRow();
+      };
+
+      // Re-populate every slot's dropdown from the current model list (used after
+      // adding/removing a slot so freshly-built rows show the available LoRAs).
+      // Never wipe a saved name when the model list is empty (e.g. models not loaded
+      // yet) — that would silently drop the user's selections in the other slots.
+      const _ulSyncSlotsToModels=()=>{
+        const haveList=Array.isArray(_loraList)&&_loraList.length>0;
+        const loraOpts=["none",...(_loraList||[])];
+        _ulRowEls.forEach((r,i)=>{
+          r._dd.updateItems(loraOpts);
+          const saved=S.userLoras[i]?.name;
+          if(saved&&saved!=="none"){
+            const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
+            const match=loraOpts.find(o=>nd(o)===nd(saved))||
+              loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
+            if(match){ r._dd.set(match); S.userLoras[i].name=match; }
+            else if(haveList){ r._dd.set("none"); S.userLoras[i].name=""; }
+            // else: list not loaded — keep the saved name, leave the dropdown as-is
+          } else r._dd.set("none");
+        });
+      };
+
+      const _ulAddSlot=()=>{
+        if(S.userLoras.length>=_UL_MAX) return;
+        S.userLoras.push({name:"",strength:1.0,enabled:true});
+        _ulRebuildRows();
+        _ulSyncSlotsToModels();
+        persist();
+      };
+
+      const _ulRemoveSlot=()=>{
+        if(S.userLoras.length<=_UL_DEFAULT) return;
+        S.userLoras.pop();
+        _ulRebuildRows();
+        _ulSyncSlotsToModels();
+        _ulUpdateBtn();persist();
+      };
+
+      _ulRebuildRows();
+
+      // Add / Remove-last slot buttons — sit together in one row below the slots
+      const _ulBtnRow=mk("div",{display:"flex",gap:"8px"});
+      _ulAddBtn=mk("button",{
+        flex:"1",display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",
+        background:"rgba(240,255,65,.06)",border:`1px dashed rgba(240,255,65,.3)`,
+        borderRadius:"8px",cursor:"pointer",color:LIME,fontSize:"10px",fontWeight:"700",
+        letterSpacing:".05em",padding:"8px",outline:"none",transition:"all .15s",
+      });
+      tx(_ulAddBtn,"+ Add slot");
+      _ulAddBtn.onmouseenter=()=>{ _ulAddBtn.style.background="rgba(240,255,65,.12)";_ulAddBtn.style.borderColor=LIME; };
+      _ulAddBtn.onmouseleave=()=>{ _ulAddBtn.style.background="rgba(240,255,65,.06)";_ulAddBtn.style.borderColor="rgba(240,255,65,.3)"; };
+      _ulAddBtn.onclick=_ulAddSlot;
+
+      _ulRemoveBtn=mk("button",{
+        flex:"1",display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",
+        background:"rgba(255,80,80,.05)",border:`1px dashed rgba(255,80,80,.25)`,
+        borderRadius:"8px",cursor:"pointer",color:"rgba(255,120,120,.8)",fontSize:"10px",fontWeight:"700",
+        letterSpacing:".05em",padding:"8px",outline:"none",transition:"all .15s",
+      });
+      tx(_ulRemoveBtn,"− Remove last slot");
+      _ulRemoveBtn.onmouseenter=()=>{ _ulRemoveBtn.style.background="rgba(255,80,80,.12)";_ulRemoveBtn.style.borderColor="rgba(255,80,80,.45)";_ulRemoveBtn.style.color="#ff8888"; };
+      _ulRemoveBtn.onmouseleave=()=>{ _ulRemoveBtn.style.background="rgba(255,80,80,.05)";_ulRemoveBtn.style.borderColor="rgba(255,80,80,.25)";_ulRemoveBtn.style.color="rgba(255,120,120,.8)"; };
+      _ulRemoveBtn.onclick=_ulRemoveSlot;
+
+      _ulBtnRow.append(_ulAddBtn,_ulRemoveBtn);
+      _ulSyncBtnRow();
 
       // Info note at bottom of panel
       const _ulInfoNote=mk("div",{
@@ -6265,16 +7971,39 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
       tx(_ulInfoNote,"✦ Trigger words are applied automatically if saved and set for the selected LoRA.");
 
-      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulInfoNote);
+      // OK button — confirm/close the panel (Enter also closes it)
+      const _ulOkBtn=mk("button",{
+        alignSelf:"flex-end",background:LIME,border:"none",borderRadius:"8px",
+        color:"#0a0a0a",fontSize:"11px",fontWeight:"700",letterSpacing:".06em",
+        padding:"8px 22px",cursor:"pointer",outline:"none",transition:"filter .12s",
+      });
+      tx(_ulOkBtn,"OK");
+      _ulOkBtn.onmouseenter=()=>_ulOkBtn.style.filter="brightness(1.1)";
+      _ulOkBtn.onmouseleave=()=>_ulOkBtn.style.filter="";
+      _ulOkBtn.onclick=_ulCloseFn;
+
+      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulBtnRow,_ulInfoNote,_ulOkBtn);
       _ulOverlay.append(_ulBg,_ulPanel);
       root.appendChild(_ulOverlay);
+
+      // Enter / Escape close the panel (unless focus is in a text field that needs Enter)
+      document.addEventListener("keydown",(e)=>{
+        if(_ulOverlay.style.display==="none") return;
+        if(e.key==="Escape"){ e.preventDefault();e.stopPropagation();_ulCloseFn();return; }
+        if(e.key!=="Enter") return;
+        const t=e.target||{};
+        if(t.tagName==="TEXTAREA") return;
+        if(t.tagName==="INPUT"&&(t.type==="text"||t.type==="search")) return;
+        e.preventDefault();e.stopPropagation();
+        _ulCloseFn();
+      },{capture:true});
 
       // ── Collect trigger words for all active LoRAs at generate time ────────
       const _buildPromptWithTriggers=async(basePrompt)=>{
         await _loadCustomTriggers();
         const trigParts=[];
         for(const ul of S.userLoras){
-          if(!ul.name||ul.name==="none"||!(+(ul.strength||0)>0)) continue;
+          if(!ul.name||ul.name==="none"||ul.enabled===false||!(+(ul.strength||0)>0)) continue;
           // Custom trigger words override metadata
           const custom=_getCustomTrigger(ul.name);
           if(custom){ trigParts.push(custom); continue; }
@@ -6311,10 +8040,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulBtn.append(_ulBtnIco,_ulBtnTxt,_ulBtnBadge);
       _ulBtn.onmouseenter=()=>{ _ulBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.18),rgba(240,255,65,.08))";_ulBtn.style.borderColor=LIME;_ulBtn.style.boxShadow="0 0 8px rgba(240,255,65,.12)"; };
       _ulBtn.onmouseleave=()=>{ _ulBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.10),rgba(240,255,65,.04))";_ulBtn.style.borderColor="rgba(240,255,65,.35)";_ulBtn.style.boxShadow="0 0 0 0 rgba(240,255,65,0)"; };
-      _ulBtn.onclick=()=>{ _ulOverlay.style.display="flex";showDimmer(); };
+      _ulBtn.onclick=()=>{ _ulOverlay.style.display="flex"; };
 
       const _ulUpdateBtn=()=>{
-        const n=S.userLoras.filter(l=>l.name&&l.name!=="none").length;
+        const n=S.userLoras.filter(l=>l.name&&l.name!=="none"&&l.enabled!==false).length;
         tx(_ulBtnBadge,String(n));
         _ulBtnBadge.style.display=n>0?"":"none";
         _ulBtn.style.borderColor=n>0?LIME:"rgba(240,255,65,.35)";
@@ -6329,7 +8058,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         display:"flex",alignItems:"center",gap:"5px",borderRadius:"5px",
         transition:"color .15s,border-color .15s",flexShrink:"0",
       });
-      _promptExpandBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg><span style="font-size:9px;font-weight:700;letter-spacing:.04em">Expand prompt</span>`;
+      _promptExpandBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg><span style="font-size:9px;font-weight:700;letter-spacing:.04em">Expand</span>`;
       _promptExpandBtn.onmouseenter=()=>{ _promptExpandBtn.style.color="#fff";_promptExpandBtn.style.borderColor="#555"; };
       _promptExpandBtn.onmouseleave=()=>{ _promptExpandBtn.style.color=C.muted;_promptExpandBtn.style.borderColor=C.border; };
 
@@ -6476,6 +8205,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         ]},
         faceswap:{categories:[
           {cat:"FACE SWAP (make sure you have a Faceswap LoRA selected in Settings)",items:[{label:"Head swap",prompt:"Replace the head in image 1 with the head from image 2, adapting the facial features to match the artistic style, focus, and environmental lighting of the image 1."}]},
+        ]},
+        pose:{categories:[
+          {cat:"POSE",items:[{label:"Apply pose",prompt:"apply pose from image 1 with reference from image 2"}]},
         ]},
       };
 
@@ -7283,21 +9015,126 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       // ── GENERATION ────────────────────────────────────────────────────────
       const _resetGenBtn=()=>{
-        genBtn.disabled=false;tx(genBtn,"Generate");
+        genBtn.disabled=false;tx(genBtn,activePill==="upscale"?"Upscale":"Generate");
         genBtn.style.background=LIME;genBtn.style.backgroundSize="";
         genBtn.style.animation="none";genBtn.style.color="#111";
         genBtn.style.border="2px solid transparent";
         stopBtn.style.maxWidth="0";stopBtn.style.minWidth="0";stopBtn.style.width="0";stopBtn.style.opacity="0";stopBtn.style.padding="0";stopBtn.style.marginLeft="0";
         progWrap.style.display="none";
         if(_lastGenObj) previewDelBtn.style.display="flex";
+        autoSaveTog.style.display="flex"; // restore after generating (all modes)
+        _refreshQuickUp();
       };
 
       const resetBtn=()=>{
         S.generating=false;S._pendingMeta=null;_activePromptId=null;
         S._preRunFiles=new Set();persist();_resetGenBtn();
+        // Quick upscale hides the batch nav while it runs. This path is the stop/error one
+        // (a successful run goes through showFinal, which clears the batch itself), so if the
+        // batch is still on screen bring its nav back rather than stranding those images.
+        if(_batchImgs.length>1) _batchNav.style.display="flex";
       };
 
-      let _lastGenObj=null; // {filename, subfolder} of the most recently generated image
+      let _lastGenObj=null; // {filename, subfolder, type} of the currently shown image
+      // True when the shown image came out of an upscale run — hides the quick-upscale pill
+      // so it can't be chain-upscaled by accident (see _refreshQuickUp).
+      let _lastResultWasUpscale=false;
+
+      // Quick-upscale pill shows only when there's an image to upscale, and never in
+      // UPSCALE mode (that panel already has its own slot + factor) or mid-generation.
+      // Declared after _lastGenObj (which it reads); only ever called at runtime.
+      // Quick-upscale pill shows only when there's an image to upscale, and never in UPSCALE
+      // mode, mid-generation, or when the shown image IS an upscale result. Hiding it after an
+      // upscale stops accidental repeat passes (4x on an already-4x image is brutal) — to go
+      // again the user goes through "Use as… → Upscale slot", where the size is visible first.
+      function _refreshQuickUp(){
+        const show=!!_lastGenObj && !S.generating && activePill!=="upscale" && !_lastResultWasUpscale;
+        quickUpWrap.style.display=show?"flex":"none";
+        if(show){ _posAutoSaveTog(); _quickUpUpdateDims(); }
+      }
+
+      // Measure the shown image and display "W×H → W'×H'" for the chosen factor, so an
+      // already-upscaled image can't be blown up again unknowingly. Warns (amber) past 4K.
+      let _quickUpProbeSeq=0; // guards against a stale probe overwriting a newer one
+      function _quickUpUpdateDims(){
+        // Measure whatever quick-upscale would actually act on: _lastGenObj. Reading
+        // finalImg.src breaks in comparer modes (finalImg is hidden) and can lag a frame
+        // behind the new result.
+        const src=_lastGenObj;
+        // Cache-bust: successive results reuse filenames, so without this the browser hands
+        // back a cached older image and we'd report ITS size (the stale-dims bug).
+        const url=src&&src.filename
+          ? api.apiURL(`/view?filename=${encodeURIComponent(src.filename)}&type=${encodeURIComponent(src.type||"output")}&subfolder=${encodeURIComponent(src.subfolder||"")}&t=${Date.now()}`)
+          : "";
+        if(!url){ tx(quickUpDims,""); return; }
+        const f=Math.max(1,Math.min(8,+S.quickUpscaleFactor||2));
+        const seq=++_quickUpProbeSeq;
+        const probe=new Image();
+        probe.onload=()=>{
+          if(seq!==_quickUpProbeSeq) return; // a newer probe started — drop this result
+          const w=probe.naturalWidth,h=probe.naturalHeight;
+          if(!w||!h){ tx(quickUpDims,""); return; }
+          const nw=w*f,nh=h*f;
+          // Only the result size — the source size is already implied by what's on screen.
+          tx(quickUpDims,`→ ${nw}×${nh}`);
+          const heavy=(nw*nh)>(3840*2160); // beyond 4K gets slow / VRAM hungry
+          quickUpDims.style.color=heavy?"#f0a040":"rgba(255,255,255,.5)";
+          quickUpDims.title=heavy?"That's a very large result — it may be slow or run out of VRAM.":"";
+        };
+        probe.onerror=()=>{ if(seq===_quickUpProbeSeq) tx(quickUpDims,""); };
+        probe.src=url;
+      }
+
+      // ── Image output (downstream) ─────────────────────────────────────────
+      // Pushes the currently shown image to the Python backend (keyed by node id),
+      // so the node's IMAGE output hands it to connected nodes on the next graph run.
+      // Called whenever the shown image changes (new result, batch step, save).
+      // Returns the fetch promise so auto-send can await it before running the graph.
+      let _outPendingPush=null;
+      const _pushOutput=(obj)=>{
+        const body=obj
+          ? {node_id:String(_liveId()),filename:obj.filename,subfolder:obj.subfolder||"",type:obj.type||"output"}
+          : {node_id:String(_liveId()),filename:""};
+        _outPendingPush=fetch("/flux_klein/set_output",{
+          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),
+        }).then(()=>true).catch(e=>{ console.warn("[FluxKlein] set_output:",fmtErr(e)); return false; });
+        return _outPendingPush;
+      };
+      // Runs the visible ComfyUI graph once (used to push output downstream / auto-send).
+      // Marks the run as throwaway so this node's WS handlers ignore its events (no image
+      // re-show, no sound). The flag clears on that run's execution_success.
+      const _fkQueueGraph=()=>{
+        _oneNodeThrowawayBegin();
+        try{
+          if(app&&typeof app.queuePrompt==="function"){ const r=app.queuePrompt(0,1); if(r&&r.then) r.catch(()=>{}); return true; }
+        }catch(e){}
+        try{
+          if(app&&app.extensionManager&&typeof app.extensionManager.queuePrompt==="function"){ app.extensionManager.queuePrompt(0,1); return true; }
+        }catch(e){}
+        _oneNodeThrowawayEnd(); // queue failed → nothing will clear it, so reset now
+        return false;
+      };
+      // After a result is shown, optionally auto-run the visible graph once so the
+      // image flows into connected nodes (e.g. an upscaler). Off → image is cached and
+      // propagates on the user's next manual Run. Mirrors the gemma node's behaviour.
+      const autoSend=async()=>{
+        const pending=_outPendingPush; // ensure the image was registered server-side first
+        if(pending) await pending;
+        const node=app.graph.getNodeById(_liveId())||self;
+        const out=node&&node.outputs&&node.outputs[0];
+        const linked=out&&out.links&&out.links.length>0;
+        if(!linked) return; // nothing downstream — the wire is the switch, no link = no send
+        // One Node family chaining: poke any One Node wired to our output (e.g. a future
+        // LTX node) to generate from this result — directly, no graph run.
+        const {hadPlain}=_oneNodeChainForward(node.id);
+        // Only run the graph when a PLAIN (non-One-Node) node is wired downstream — e.g.
+        // a Preview Image or upscaler that needs our IMAGE output. If every target is a
+        // One Node, the poke already handles it and a graph run would just push a stale
+        // (no-op) image into those plain nodes prematurely.
+        if(hadPlain && !_fkQueueGraph()){
+          console.warn("[FluxKlein] Could not auto-run the graph to send the image downstream; press Run manually. The image is cached and will propagate on the next run.");
+        }
+      };
 
       let _previewBlobUrl=null;
       const showPreview=(url)=>{
@@ -7308,14 +9145,32 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         finalImg.style.display="block";
       };
 
+      // POSE: the DWPose skeleton is ready (phase before sampling). Show it live in
+      // the preview as a milestone, and stash its URL so showFinal can build a
+      // before(skeleton)/after(result) comparer once the result arrives.
+      let _poseSkeletonUrl=null;
+      const poseSkeleton=(url)=>{
+        _poseSkeletonUrl=url;
+        placeholder.style.display="none";
+        comparerWrap.style.display="none";
+        finalImg.src=url;
+        finalImg.style.display="block";
+        if(_activeSetStage) _activeSetStage("Generating…","Pose detected, generating…",10);
+      };
+
       const showFinal=(url,filename,subfolder)=>{
         if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
         clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        // Read the snapshot BEFORE _resetGenBtn (which calls _refreshQuickUp).
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
         _resetGenBtn();
         if(soundEnabled)playDone();
         _galNeedsRefresh=true;
-        if(filename) _lastGenObj={filename,subfolder:subfolder||""};
+        if(filename){ _lastGenObj={filename,subfolder:subfolder||"",type:"output"}; _pushOutput(_lastGenObj); }
         placeholder.style.display="none";
+        _batchNav.style.display="none"; _batchImgs=[]; _batchTemp=false;
+        finalImg.style.cursor="";
+        previewSaveBtn.style.display="none";
 
         // Save metadata — use snapshot captured at Generate click time
         const meta=S._pendingMeta?{v:1,...S._pendingMeta}:{v:1,prompt:S.prompt,w:getEffectiveW(),h:getEffectiveH(),mode:activePill};
@@ -7326,47 +9181,335 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           }).catch(e=>console.warn("[FluxKlein] save_meta:",e));
         }
 
-        const _showComparer=(img1InputName)=>{
-          finalImg.style.display="none";
-          comparerGenImg.src=url;
-          comparerGenImg.style.width=(previewBox.offsetWidth||620)+"px";
-          comparerBase.src=api.apiURL(`/view?filename=${encodeURIComponent(img1InputName)}&type=input&subfolder=`);
-          comparerWrap.style.display="block";
-          previewUseWrap.style.display="block";
-          _cmpSetPct(100);
-        };
         // Use snapshot mode/image so switching pills mid-generation doesn't corrupt comparer
         const _snapMode=S._pendingMeta?.mode||activePill;
         const _snapImg1=S._pendingMeta?.image1||null;
-        const _isSketchResult=_snapMode==="sketch"&&_snapImg1;
-        const _isPaintResult=(_snapMode==="inpaint"||_snapMode==="outpaint")&&_snapImg1;
-        if(_snapMode==="edit"&&_snapImg1){
-          _showComparer(_snapImg1);
-        } else if(_isSketchResult||_isPaintResult){
-          _showComparer(_snapImg1);
-        } else if(_snapMode==="faceswap"&&_snapImg1){
-          _showComparer(_snapImg1);
-        } else if(_snapMode==="i2i"&&_snapImg1){
-          _showComparer(_snapImg1);
-        } else {
-          comparerWrap.style.display="none";
+        if(!_applyComparer(url,_snapMode,_snapImg1,_poseSkeletonUrl)){
           finalImg.src=url;finalImg.style.display="block";
         }
         previewUseWrap.style.display="block";
         if(filename) previewDelBtn.style.display="flex";
+        // After the new image is in place — so the quick-upscale size readout measures the
+        // RESULT (e.g. the just-upscaled image), not the one it replaced.
+        _refreshQuickUp();
+      };
+
+      // ── T2I batch result: multiple images, click through them ─────────────
+      let _batchImgs=[];   // [{filename, subfolder, url}]
+      let _batchIdx=0;
+      const _batchNav=mk("div",{
+        position:"absolute",bottom:"10px",left:"50%",transform:"translateX(-50%)",
+        zIndex:"6",display:"none",alignItems:"center",gap:"8px",
+        background:"rgba(20,20,20,.82)",border:"1px solid rgba(255,255,255,.2)",
+        borderRadius:"8px",padding:"4px 6px",backdropFilter:"blur(4px)",
+        boxShadow:"0 2px 8px rgba(0,0,0,.5)",
+      });
+      const _mkBatchArrow=(svg)=>{ const b=mk("button",{background:"transparent",border:"none",
+        color:"rgba(255,255,255,.85)",cursor:"pointer",padding:"2px 4px",outline:"none",
+        display:"flex",alignItems:"center",lineHeight:"0",borderRadius:"4px"});
+        b.innerHTML=svg; b.onmouseenter=()=>b.style.color=LIME; b.onmouseleave=()=>b.style.color="rgba(255,255,255,.85)"; return b; };
+      const _batchPrev=_mkBatchArrow(`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>`);
+      const _batchNext=_mkBatchArrow(`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>`);
+      const _batchCounter=mk("span",{fontSize:"10px",fontWeight:"700",color:"#fff",minWidth:"30px",textAlign:"center",letterSpacing:".03em"});
+      _batchNav.append(_batchPrev,_batchCounter,_batchNext);
+      previewBox.appendChild(_batchNav);
+
+
+      // _batchTemp: when true, _batchImgs hold UNSAVED temp images (auto-save off).
+      // Each entry may carry .saved=true once the user saves it.
+      let _batchTemp=false;
+      // Snapshot of the mode/input for the current result set, so each image shown
+      // (single or batch, saved or temp) can still get the before/after comparer
+      // (EDIT, POSE, FACESWAP, I2I, PAINT). The "before" is shared across the batch.
+      let _batchSnapMode=null, _batchSnapImg1=null, _batchSnapSkeleton=null;
+      const _batchShow=(i)=>{
+        if(!_batchImgs.length) return;
+        _batchIdx=(i+_batchImgs.length)%_batchImgs.length;
+        const b=_batchImgs[_batchIdx];
+        // Comparer modes show before/after for each image; the "after" is the current
+        // batch image, the "before" is the shared input/skeleton from the snapshot.
+        const _cmpShown=_applyComparer(b.url,_batchSnapMode,_batchSnapImg1,_batchSnapSkeleton);
+        if(!_cmpShown){
+          finalImg.src=b.url; finalImg.style.display="block";
+        }
+        // In comparer mode the image is hidden (comparer handles the drag), so the
+        // click-to-step affordance only applies to the flat-image batch view.
+        finalImg.style.cursor=(!_cmpShown && _batchImgs.length>1)?"pointer":"";
+        tx(_batchCounter,`${_batchIdx+1} / ${_batchImgs.length}`);
+        if(_batchTemp){
+          // Temp result: offer Save (unless already saved); no delete (not in gallery yet).
+          // _lastGenObj must always point at the CURRENTLY shown image (with its type),
+          // so "Use as…" / delete act on it — not on a stale gallery image. Unsaved temp
+          // images live in the temp folder; saved ones moved to output.
+          _lastGenObj=b.saved
+            ? {filename:b.savedName,subfolder:b.savedSub,type:"output"}
+            : {filename:b.filename,subfolder:b.subfolder,type:"temp"};
+          previewSaveBtn.style.display=b.saved?"none":"flex";
+          previewDelBtn.style.display=b.saved?"flex":"none";
+        } else {
+          _lastGenObj={filename:b.filename,subfolder:b.subfolder,type:"output"};
+          previewSaveBtn.style.display="none";
+          previewDelBtn.style.display="flex";
+        }
+        // Keep the downstream output in sync with whichever batch image is shown.
+        _pushOutput(_lastGenObj);
+        _refreshQuickUp(); // upscale acts on the selected batch image
+      };
+      _batchPrev.onclick=(e)=>{ e.stopPropagation(); _batchShow(_batchIdx-1); };
+      _batchNext.onclick=(e)=>{ e.stopPropagation(); _batchShow(_batchIdx+1); };
+
+      // ── Quick upscale ─────────────────────────────────────────────────────
+      // Upscales whatever the preview currently shows. _lastGenObj always tracks the shown
+      // image (including the selected one in a batch), so this works for both. The result
+      // is saved to the gallery and shown in place, like a normal generation.
+      const _quickUpscaleRun=async()=>{
+        if(S.generating) return;
+        const src=_lastGenObj;
+        if(!src||!src.filename){ showError("Nothing to upscale yet — generate an image first."); return; }
+        if(!S.upscaleModel){ showError("UPSCALE: select an Upscale Model in Settings."); return; }
+        if(!S.upscaleVae){ showError("UPSCALE: select an Upscale VAE in Settings."); return; }
+
+        // The upscale workflow's LoadImage reads from the INPUT folder, but our result lives
+        // in output/temp — copy it over first and use the returned input-folder name.
+        let inputName;
+        try{
+          const r=await api.fetchApi("/flux_klein/stage_input",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({filename:src.filename,subfolder:src.subfolder||"",type:src.type||"output"}),
+          });
+          const d=await r.json();
+          if(!d||!d.ok||!d.name) throw new Error(d&&d.error?d.error:"copy failed");
+          inputName=d.name;
+        }catch(e){ showError("Upscale: could not stage the image ("+fmtErr(e)+")"); return; }
+
+        let wfData;
+        try{
+          const r=await api.fetchApi("/flux_klein/workflow_upscale");
+          if(!r.ok) throw new Error("HTTP "+r.status);
+          wfData=await r.json();
+        }catch(e){ showError("Could not load upscale workflow (HTTP 404 = restart ComfyUI): "+fmtErr(e)); return; }
+
+        const p=JSON.parse(JSON.stringify(wfData));
+        const f=Math.max(1,Math.min(8,+S.quickUpscaleFactor||2));
+        p["FKU:img"].inputs.image=inputName;
+        p["FKU:unet"].inputs.unet_name=S.upscaleModel;
+        p["FKU:vae"].inputs.vae_name=S.upscaleVae;
+        p["FKU:resize"].inputs["resize_type.multiplier"]=f;
+        // Same VAE tile size as UPSCALE mode — one VRAM setting for both paths.
+        const _qt=_upTileSize();
+        p["FKU:enc"].inputs.tile_size=_qt; p["FKU:enc"].inputs.overlap=_qt/4;
+        p["FKU:dec"].inputs.tile_size=_qt; p["FKU:dec"].inputs.overlap=_qt/4;
+        p["FKU:sampler"].inputs.seed=Math.floor(Math.random()*999999999999);
+        p["FKU:save"].inputs.filename_prefix="one-node-flux-2-klein/FK";
+        // Auto-save handling (the generate path's _applyAutoSave lives in another scope and
+        // works on its own `prompt`, so mirror its behaviour here on `p`).
+        _activeSaveNode="FKU:save";
+        if(S.autoSave===false){
+          const imgsRef=p["FKU:save"].inputs.images;
+          p["FKU:save"]={ class_type:"PreviewImage", inputs:{images:imgsRef}, _meta:{title:"Preview (unsaved)"} };
+        }
+
+        // Route completion through the normal single-image path.
+        _activeS=S; _activeShowFinal=showFinal; _activeShowFinalBatch=showFinalBatch;
+        _activeShowTemp=showTemp; _activeAutoSend=autoSend; _activeShowPreview=showPreview;
+        _activeResetBtn=resetBtn; _activeSetStage=setStage; _activeShowError=showError;
+        _activePromptIdRef=()=>_activePromptId;
+        _activeBatchN=1;
+        _oneNodeThrowawayForceClear();
+
+        // Metadata: record it as an upscale of the source image, with the RESULTING size.
+        // The source dims aren't known here (the image came from the gallery/preview), so
+        // measure the staged input and multiply by the factor. If the probe fails we still
+        // save the rest of the metadata rather than blocking the run.
+        let _upW=0,_upH=0;
+        try{
+          const dims=await new Promise((res)=>{
+            const im=new Image();
+            im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});
+            im.onerror=()=>res(null);
+            im.src=api.apiURL(`/view?filename=${encodeURIComponent(inputName)}&type=input&subfolder=&t=${Date.now()}`);
+          });
+          if(dims){ _upW=dims.w*f; _upH=dims.h*f; }
+        }catch(e){}
+        S._pendingMeta={ v:1, prompt:"", mode:"upscale", upscaleFactor:f, image1:inputName, userLoras:[],
+          ...(_upW&&_upH?{w:_upW,h:_upH}:{}) };
+
+        try{
+          const prevR=await api.fetchApi("/flux_klein/gallery?offset=0&limit=200&subfolder=one-node-flux-2-klein");
+          const prevD=await prevR.json();
+          S._preRunFiles=new Set((prevD.images||[]).map(v=>v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)));
+        }catch(e){ S._preRunFiles=new Set(); }
+
+        clearError();S.generating=true;
+        progWrap.style.display="flex";
+        setStage("Upscaling…",`${f}x`,0);
+        genBtn.disabled=true;tx(genBtn,"Upscaling…");
+        autoSaveTog.style.display="none";
+        quickUpWrap.style.display="none";
+        previewDelBtn.style.display="none";
+        previewSaveBtn.style.display="none";
+        _batchNav.style.display="none"; // the batch we came from isn't the upscale's result
+        // Show the Stop button, same as a normal generation.
+        requestAnimationFrame(()=>{
+          stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";
+          stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
+        });
+
+        try{
+          const resp=await api.fetchApi("/prompt",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({prompt:p,client_id:api.clientId}),
+          });
+          const data=await resp.json();
+          if(data.error){ showError(fmtErr(data.error.message||data.error)); resetBtn(); return; }
+          _activePromptId=data.prompt_id||null;
+          console.log("[FluxKlein] upscale queued:",_activePromptId);
+        }catch(e){ showError("Upscale request failed: "+fmtErr(e)); resetBtn(); }
+      };
+      quickUpBtn.onclick=(e)=>{ e.stopPropagation(); _quickUpscaleRun(); };
+
+      // Open the fullscreen overlay on the currently shown result (single or batch).
+      // Renders an image, or a before/after comparer for comparer modes. Wires up the
+      // batch nav so the fullscreen ‹ › buttons / arrow keys step through the batch
+      // (keeping the in-UI preview in sync via _batchShow).
+      const _openFsCurrent=(isNav)=>{
+        const fs=_initNodeFsOverlay();
+        // Determine current image + (optional) comparer "before".
+        let curUrl="", before=null;
+        if(_batchImgs.length){
+          const b=_batchImgs[_batchIdx];
+          curUrl=b.url;
+          before=_comparerBeforeUrl(_batchSnapMode,_batchSnapImg1,_batchSnapSkeleton);
+        } else if(comparerWrap.style.display!=="none"&&comparerGenImg.src){
+          curUrl=comparerGenImg.src; before=comparerBase.src;
+        } else if(finalImg.style.display!=="none"&&finalImg.src){
+          curUrl=finalImg.src;
+        }
+        if(!curUrl) return;
+        fs._navInfo={ count:_batchImgs.length, idx:_batchIdx };
+        fs._navHook=(dir)=>{ _batchShow(_batchIdx+dir); _openFsCurrent(true); };
+        const type=before?"comparer":"image";
+        // On batch step, swap the media in place (no DOM rebuild) to avoid the flash.
+        if(isNav && fs._updateMedia(type,curUrl,before)) return;
+        if(before){
+          fs._open("comparer",curUrl,"Before / After",{genSrc:curUrl,baseSrc:before});
+        } else {
+          fs._open("image",curUrl,_batchImgs.length>1?`${_batchIdx+1} / ${_batchImgs.length}`:"Preview");
+        }
+      };
+
+      // Click the preview to step through a batch: right half → next, left half → prev.
+      finalImg.addEventListener("click",(e)=>{
+        if(_batchImgs.length<2) return;
+        const r=finalImg.getBoundingClientRect();
+        if(e.clientX-r.left > r.width/2) _batchShow(_batchIdx+1);
+        else _batchShow(_batchIdx-1);
+      });
+
+      // Save the currently shown temp image into the gallery (auto-save off).
+      const _saveCurrentTemp=async()=>{
+        if(!_batchTemp||!_batchImgs.length) return;
+        const b=_batchImgs[_batchIdx];
+        if(b.saved) return;
+        const meta=S._pendingMeta?{v:1,...S._pendingMeta}:{v:1,prompt:S.prompt,w:getEffectiveW(),h:getEffectiveH(),mode:activePill};
+        try{
+          const r=await api.fetchApi("/flux_klein/save_temp",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({filename:b.filename,subfolder:b.subfolder,meta}),
+          });
+          const d=await r.json();
+          if(d.ok){
+            b.saved=true; b.savedName=d.filename; b.savedSub=d.subfolder||"";
+            _galNeedsRefresh=true;
+            _batchShow(_batchIdx); // refresh Save/Delete button state
+          } else { console.warn("[FluxKlein] save_temp failed:",d.error); }
+        }catch(e){ console.warn("[FluxKlein] save_temp error:",fmtErr(e)); }
+      };
+      previewSaveBtn.onclick=(e)=>{ e.stopPropagation(); _saveCurrentTemp(); };
+
+      // Show unsaved temp results (auto-save off). One or many (batch).
+      const showTemp=(images)=>{
+        if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
+        clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
+        _resetGenBtn();
+        if(soundEnabled)playDone();
+        placeholder.style.display="none";
+        comparerWrap.style.display="none";
+        previewUseWrap.style.display="block";
+        const cb=Date.now();
+        _batchTemp=true;
+        // Capture mode/input snapshot so the comparer (before/after) works for temp results too.
+        _batchSnapMode=S._pendingMeta?.mode||activePill;
+        _batchSnapImg1=S._pendingMeta?.image1||null;
+        _batchSnapSkeleton=_poseSkeletonUrl;
+        _batchImgs=images.map(im=>({
+          filename:im.filename, subfolder:im.subfolder||"", saved:false,
+          url:api.apiURL(`/view?filename=${encodeURIComponent(im.filename)}&type=${encodeURIComponent(im.type||"temp")}&subfolder=${encodeURIComponent(im.subfolder||"")}&t=${cb}`),
+        }));
+        _batchShow(0);
+        _batchNav.style.display=_batchImgs.length>1?"flex":"none";
+        // Auto-save off path: _batchShow already pushed the temp image to the output;
+        // trigger the downstream auto-run here (execution_success won't, since
+        // generating is already false by the time it fires for the temp/PreviewImage run).
+        autoSend();
+      };
+
+      const showFinalBatch=(images)=>{
+        if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
+        clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
+        _resetGenBtn();
+        if(soundEnabled)playDone();
+        _galNeedsRefresh=true;
+        placeholder.style.display="none";
+        comparerWrap.style.display="none";
+        previewUseWrap.style.display="block";
+
+        const cb=Date.now();
+        _batchTemp=false;
+        previewSaveBtn.style.display="none";
+        // Capture snapshot so the comparer (before/after) works for batch results too.
+        _batchSnapMode=S._pendingMeta?.mode||activePill;
+        _batchSnapImg1=S._pendingMeta?.image1||null;
+        _batchSnapSkeleton=_poseSkeletonUrl;
+        _batchImgs=images.map(im=>({
+          filename:im.filename, subfolder:im.subfolder||"",
+          url:api.apiURL(`/view?filename=${encodeURIComponent(im.filename)}&type=output&subfolder=${encodeURIComponent(im.subfolder||"")}&t=${cb}`),
+        }));
+
+        // Save metadata for every image in the batch (same snapshot for all).
+        const meta=S._pendingMeta?{v:1,...S._pendingMeta}:{v:1,prompt:S.prompt,w:getEffectiveW(),h:getEffectiveH(),mode:activePill};
+        _batchImgs.forEach(b=>{
+          api.fetchApi("/flux_klein/save_meta",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({filename:b.filename,subfolder:b.subfolder,meta}),
+          }).catch(e=>console.warn("[FluxKlein] save_meta(batch):",e));
+        });
+
+        _batchShow(0);
+        _batchNav.style.display=_batchImgs.length>1?"flex":"none";
       };
 
       const _slotErr=(slot,lbl)=>{ slot.el.style.borderColor="#e05555"; tx(lbl,"Required!"); lbl.style.color="#e05555"; };
 
       genBtn.onclick=async()=>{
-        if(!S.prompt.trim()&&activePill!=="faceswap"){showError("Please enter a prompt.");return;}
+        // Empty prompt is allowed in every mode — at worst it just doesn't change the
+        // image (Edit/I2I) or produces something generic (T2I); nothing breaks.
         if(activePill==="inpaint"){
+          // No mode picked yet? If there's an image in the slot, just treat it as a
+          // plain sketch pass (use the image as-is). Inpaint/outpaint still need a mask,
+          // so they only kick in once the user has actually drawn one (_maskName set).
+          if(_paintMode!=="sketch"&&_paintMode!=="inpaint"&&_paintSlot.hasFile()&&!_maskName){
+            _setPaintMode("sketch");
+          }
           if(_paintMode==="sketch"){
             if(!_paintSlot.hasFile()){ _slotErr(_paintSlot,_paintSlotLbl); return; }
           } else if(_paintMode==="inpaint"){
             if(!_maskName){ showError("PAINT / Inpaint: open Inpaint, draw a mask and confirm it first."); return; }
             if(_maskName!=="__outpaint__"&&!_paintSlot.hasFile()){ _slotErr(_paintSlot,_paintSlotLbl); return; }
           } else {
+            // Nothing in the slot at all → genuinely needs an image.
             _slotErr(_paintSlot,_paintSlotLbl); return;
           }
         }
@@ -7377,10 +9520,35 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(!_fsSourceSlot.hasFile()){_slotErr(_fsSourceSlot,_fsSourceLbl);return;}
           if(!S.fsLora||S.fsLora==="none") {showError("FACESWAP: select a Faceswap LoRA in Settings.");return;}
         }
-        const _hasExtModel=(()=>{ const n=app.graph.getNodeById(self.id); const inputs=n?.inputs||[]; const slot=inputs.find(i=>i.name==="model"); return slot?.link!=null; })();
-        if(!S.model&&!_hasExtModel){showError("No model selected. Open Settings and choose a model.");return;}
+        if(activePill==="pose"){
+          if(!_poseImgSlot.hasFile()){_slotErr(_poseImgSlot,_poseImgLbl);return;}
+          if(!_poseRefSlot.hasFile()){_slotErr(_poseRefSlot,_poseRefLbl);return;}
+          if(!S.poseLora||S.poseLora==="none"){showError("POSE: select a Pose LoRA in Settings.");return;}
+        }
+        if(activePill==="upscale"){
+          if(!_upSlot.hasFile()){_slotErr(_upSlot,_upSlotLbl);return;}
+          if(!S.upscaleModel){showError("UPSCALE: select an Upscale Model in Settings.");return;}
+          if(!S.upscaleVae){showError("UPSCALE: select an Upscale VAE in Settings.");return;}
+        }
+        const _hasExtModel=(()=>{ const n=app.graph.getNodeById(_liveId()); const inputs=n?.inputs||[]; const slot=inputs.find(i=>i.name==="model"); return slot?.link!=null; })();
+        // UPSCALE runs entirely on its own SeedVR2 model/VAE — it never touches the Flux model,
+        // so don't block it when no Flux model is selected.
+        if(activePill!=="upscale"&&!S.model&&!_hasExtModel){showError("No model selected. Open Settings and choose a model.");return;}
 
-        clearError();S.generating=true;
+        // Make this node the active one for WS events — important when generation is
+        // triggered programmatically (One Node chain poke) without a prior click/focus.
+        _activeS=S; _activeShowFinal=showFinal; _activeShowFinalBatch=showFinalBatch;
+        _activeShowTemp=showTemp; _activeAutoSend=autoSend; _activeShowPreview=showPreview;
+        _activeResetBtn=resetBtn; _activeSetStage=setStage; _activeShowError=showError;
+        _activePoseSkeleton=poseSkeleton; _activePromptIdRef=()=>_activePromptId;
+
+        // Real user-initiated generation: clear any stuck throwaway flag so events show.
+        _oneNodeThrowawayForceClear();
+
+        clearError();S.generating=true;_poseSkeletonUrl=null;
+        _lastResultWasUpscale=false; // a fresh run's result is upscalable again
+        _batchNav.style.display="none";_batchImgs=[];_batchTemp=false;
+        previewSaveBtn.style.display="none";
 
         // Snapshot all meta-relevant state at click time so mid-generation UI changes don't corrupt metadata
         const _isSketchSnap=activePill==="inpaint"&&_paintMode==="sketch";
@@ -7394,18 +9562,67 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         else if(_isOutpaintSnap) _snapMode="outpaint";
         else if(_isFaceswapSnap) _snapMode="faceswap";
         else _snapMode=activePill;
+        // Read the prompt-input node's text (if wired) so the SAVED metadata matches the prompt
+        // that actually generated the image — not the (possibly different) prompt box. Defined
+        // here (before _pendingMeta) and reused below for the workflow patch.
+        const _readPromptInputText=()=>{
+          const node=app.graph.getNodeById(_liveId());
+          if(!node) return null;
+          const slot=(node.inputs||[]).find(i=>i.name==="prompt");
+          if(!slot||slot.link==null) return null;
+          const link=app.graph.links[slot.link];
+          if(!link) return null;
+          const src=app.graph.getNodeById(link.origin_id);
+          if(!src) return null;
+          // Bypassed (mode 4) or muted (mode 2) upstream node: treat it as if it weren't
+          // connected at all, so the prompt falls back to our own prompt box. Otherwise the
+          // node would keep feeding its text even though the user explicitly bypassed it.
+          if(src.mode===2||src.mode===4) return null;
+          // "One Node" siblings (e.g. Gemma 4) are no-op nodes whose text lives in their
+          // own UI state, not a widget. Read their last generated output directly.
+          if(src._g4_S && typeof src._g4_S.lastOutput==="string") return src._g4_S.lastOutput;
+          if(src._fk_S && typeof src._fk_S.prompt==="string") return src._fk_S.prompt;
+          // Standard text nodes: prefer a widget literally named text/string/value/prompt,
+          // else the first string-valued widget on the node.
+          const ws=src.widgets||[];
+          const named=ws.find(w=>/^(text|string|value|prompt)$/i.test(w.name||"")&&typeof w.value==="string");
+          if(named) return named.value;
+          const anyStr=ws.find(w=>typeof w.value==="string");
+          return anyStr?anyStr.value:null;
+        };
+        const _promptInputText=_readPromptInputText();
+        const _basePrompt=(_promptInputText!=null)?_promptInputText:(S.prompt||"");
+        // UPSCALE has no prompt/resolution controls: its output size is the source image
+        // scaled by the factor, and the source image is what we record as image1.
+        const _isUpscaleSnap=activePill==="upscale";
+        const _upSnapDims=(()=>{
+          if(!_isUpscaleSnap) return null;
+          const d=_upDims._getDims(); const f=+S.upscaleFactor||2;
+          if(!d.w||!d.h) return null;
+          // Mirror the pipeline: optional pre-resize, THEN ×factor — otherwise the saved
+          // size would be the un-shrunk source × factor, which isn't what gets produced.
+          let sw=d.w, sh=d.h;
+          const pre=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+          if(pre>0){
+            const s=pre/Math.max(d.w,d.h);
+            sw=Math.max(16,Math.round(d.w*s)); sh=Math.max(16,Math.round(d.h*s));
+          }
+          return {w:sw*f,h:sh*f};
+        })();
         S._pendingMeta={
-          prompt:S.prompt,
-          w:getEffectiveW(), h:getEffectiveH(),
+          prompt:_isUpscaleSnap?"":_basePrompt,
+          w:_upSnapDims?_upSnapDims.w:getEffectiveW(), h:_upSnapDims?_upSnapDims.h:getEffectiveH(),
           mode:_snapMode,
-          image1:activePill==="i2i"?(S.i2iImage||null):(_isPaintSnap?(_paintSlot.name||null):(_isFaceswapSnap?(S.fsTarget||null):(activePill==="edit"?(S.image1Name||null):null))),
+          ...(_isUpscaleSnap?{upscaleFactor:+S.upscaleFactor||2}:{}),
+          image1:_isUpscaleSnap?(_upSlot.name||null):(activePill==="i2i"?(S.i2iImage||null):(_isPaintSnap?(_paintSlot.name||null):(_isFaceswapSnap?(S.fsTarget||null):(activePill==="pose"?(S.poseRef||null):(activePill==="edit"?(S.image1Name||null):null))))),
           i2iDenoise:activePill==="i2i"?S.i2iDenoise:undefined,
-          image2:(_isFaceswapSnap?(S.fsSource||null):(activePill==="edit"?(S.image2Name||null):null)),
+          inpaintDenoise:(_isInpaintSnap&&+S.inpaintDenoise<1)?+S.inpaintDenoise:undefined,
+          image2:(_isFaceswapSnap?(S.fsSource||null):(activePill==="pose"?(S.poseImage||null):(activePill==="edit"?(S.image2Name||null):null))),
           mask:_isInpaintSnap?(_maskName||null):null,
           outpaintExpand:_isOutpaintSnap?{top:_opTop,right:_opRight,bottom:_opBottom,left:_opLeft}:null,
           useSizeSource:(activePill==="edit")?(_useSizeSource||null):null,
-          userLoras:S.userLoras.filter(l=>l.name&&l.name!=="none"&&+(l.strength||0)>0).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
-          ...(S.advancedUI?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
+          userLoras:_isUpscaleSnap?[]:S.userLoras.filter(l=>l.name&&l.name!=="none"&&l.enabled!==false&&+(l.strength||0)>0).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
+          ...((S.advancedUI&&!_isUpscaleSnap)?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
             sampler:S.sampler||"er_sde", scheduler:S.scheduler||"simple",
             advancedUI:true}:{}),
           seed:S.seed||0, randomizeSeed:S.randomizeSeed,
@@ -7425,6 +9642,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         genBtn.style.animation="fk-gradient 2.4s ease infinite";
         genBtn.style.color=LIME;genBtn.style.border="2px solid transparent";
         previewDelBtn.style.display="none";
+        autoSaveTog.style.display="none"; // hidden while generating; restored on completion
+        quickUpWrap.style.display="none";
         requestAnimationFrame(()=>{
           stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
         });
@@ -7442,11 +9661,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const isOutpaintMode=activePill==="inpaint"&&_paintMode==="inpaint"&&_maskName==="__outpaint__";
         const isFaceswapMode=activePill==="faceswap";
         const isI2IMode=activePill==="i2i";
+        const isPoseMode=activePill==="pose";
+        const isUpscaleMode=activePill==="upscale";
         let wfUrl;
         if(activePill==="edit"||isSketchMode) wfUrl="/flux_klein/workflow_edit";
         else if(isInpaintMode) wfUrl="/flux_klein/workflow_inpaint";
         else if(isOutpaintMode) wfUrl="/flux_klein/workflow_outpaint";
         else if(isFaceswapMode) wfUrl="/flux_klein/workflow_faceswap";
+        else if(isPoseMode) wfUrl="/flux_klein/workflow_pose";
+        else if(isUpscaleMode) wfUrl="/flux_klein/workflow_upscale";
         else if(isI2IMode) wfUrl="/flux_klein/workflow_i2i";
         else wfUrl="/flux_klein/workflow_t2i";
 
@@ -7461,6 +9684,48 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         const prompt=JSON.parse(JSON.stringify(wfData));
         const set=(id,key,val)=>{ if(prompt[id]) prompt[id].inputs[key]=val; };
+        // Auto-save off: turn the given mode's SaveImage node into a temp PreviewImage,
+        // so nothing lands in the gallery until the user hits Save. Records the node id
+        // so the "executed" listener can pick up its temp output. Each mode calls this
+        // with its own save node id after it has set the filename_prefix.
+        const _applyAutoSave=(saveId)=>{
+          _activeSaveNode=saveId;
+          if(S.autoSave===false && prompt[saveId]){
+            const imgsRef=prompt[saveId].inputs.images;
+            prompt[saveId]={ class_type:"PreviewImage", inputs:{images:imgsRef}, _meta:{title:"Preview (unsaved)"} };
+          }
+        };
+        // Batch: produce N images per run. Two shapes:
+        //  • EmptyLatent source (T2I, EDIT, FACESWAP, POSE): just set batch_size on it.
+        //  • VAEEncode / conditioning latent (I2I, INPAINT, OUTPAINT): the latent carries
+        //    the input image, so we splice a RepeatLatentBatch between it and the sampler
+        //    to duplicate it N× (the sampler then gives N noise-varied results).
+        // The conditioning broadcasts over the batch automatically. Returns the count used.
+        // Inpaint AND outpaint are forced to a single image. Both build the latent through
+        // InpaintModelConditioning (with a per-image noise_mask), and inpaint additionally
+        // stitches via InpaintStitchImproved whose crop context is single-image. Splicing a
+        // RepeatLatentBatch of N into that single-image, mask-bound latent path doesn't produce
+        // N independent results (mismatch / only the first is usable), so we cap these to 1.
+        // Inpaint AND outpaint force 1: both run through the inpaint workflow
+        // (InpaintCropImproved + InpaintStitchImproved). Outpaint is exported as an inpaint mask
+        // and routed there (see _maskName==="__outpaint__" handling), so it hits the same
+        // single-stitcher limit — InpaintStitchImproved handles one stitcher/image only.
+        // Inpaint/outpaint: single-stitcher limit. Upscale: one source image in, one out.
+        const _batchN=()=>(isInpaintMode||isOutpaintMode||isUpscaleMode)?1:Math.max(1,Math.min(4,+S.batchCount||1));
+        // Snapshot the batch size actually used for THIS submission, so the completion handler
+        // routes the result set by this value rather than the live S.batchCount (which the user
+        // may change mid-run).
+        _activeBatchN=_batchN();
+        const _applyBatchEmpty=(latentId)=>{ set(latentId,"batch_size",_batchN()); };
+        const _applyBatchRepeat=(samplerId,latentInputKey)=>{
+          const n=_batchN();
+          if(n<=1) return;
+          const sampler=prompt[samplerId]; if(!sampler) return;
+          const src=sampler.inputs[latentInputKey]; if(!src) return; // [nodeId, slot]
+          const repId=`${samplerId}:rep`;
+          prompt[repId]={ class_type:"RepeatLatentBatch", inputs:{samples:src,amount:n}, _meta:{title:"Repeat Latent Batch"} };
+          sampler.inputs[latentInputKey]=[repId,0];
+        };
         const _isBase=_isBaseModel();
         const _setAdv=(samplerNodeId,skipDenoise)=>{
           const steps=S.advancedUI?(S.steps||4):(_isBase?20:4);
@@ -7474,8 +9739,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           }
         };
 
-        // Build effective prompt — trigger words from all active LoRAs prepended
-        const _effectivePrompt=await _buildPromptWithTriggers(S.prompt||"");
+        // Prompt text input + LoRA/POSE triggers were resolved above (into _basePrompt) so the
+        // saved metadata matches the generating prompt. Build the effective workflow prompt here.
+        const _effectivePrompt=await _buildPromptWithTriggers(_basePrompt);
 
         const useKV=(S.model||"").toLowerCase().includes("kv");
 
@@ -7483,8 +9749,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // If the node has optional inputs wired from outside (e.g. a GGUF loader),
         // skip internal loaders and use the external node's output instead.
         // The external node is serialized and added to the prompt so ComfyUI can find it.
-        const _selfNode=app.graph.getNodeById(self.id);
+        const _selfNode=app.graph.getNodeById(_liveId());
         const _extSlot=(name)=>{
+          // Toggle off = external inputs are ignored even if a wire is still connected;
+          // the internal dropdown model is used. The toggle is the single source of truth.
+          if(!S.extLoaders) return null;
           if(!_selfNode) return null;
           const inputs=_selfNode.inputs||[];
           const slot=inputs.find(i=>i.name===name);
@@ -7515,12 +9784,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const extClip =_extSlot("clip");
         const extVae  =_extSlot("vae");
 
+
         // ── LoRA chain helper ───────────────────────────────────────────────
         const _applyLoRAs=(chainSrc,idPrefix)=>{
           const toPrev=(p)=>typeof p==="string"?[p,0]:p;
           let prev=chainSrc;
           (S.userLoras||[]).forEach((ul,i)=>{
-            if(!ul.name||ul.name==="none"||!(+(ul.strength||0)>0)) return;
+            if(!ul.name||ul.name==="none"||ul.enabled===false||!(+(ul.strength||0)>0)) return;
             const id=`${idPrefix}UL${i+1}`;
             prompt[id]={
               inputs:{lora_name:ul.name,strength_model:+(ul.strength??1.0),model:toPrev(prev)},
@@ -7532,8 +9802,44 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           return prev;
         };
 
+        // ── UPSCALE workflow patching (SeedVR2) ─────────────────────────────
+        // Standalone path: its own model + VAE, no prompt, no LoRAs, no KV cache, no batch.
+        // The scale factor drives ResizeImageMaskNode; SeedVR2 then restores detail.
+        if(isUpscaleMode){
+          set("FKU:img","image",_upSlot.name||"example.png");
+          set("FKU:unet","unet_name",S.upscaleModel);
+          set("FKU:vae","vae_name",S.upscaleVae);
+          set("FKU:resize","resize_type.multiplier",Math.max(1,Math.min(8,+S.upscaleFactor||2)));
+          // VAE tile size (VRAM control) — overlap follows tile/4, matching ComfyUI's own clamp.
+          {
+            const _t=_upTileSize();
+            set("FKU:enc","tile_size",_t); set("FKU:enc","overlap",_t/4);
+            set("FKU:dec","tile_size",_t); set("FKU:dec","overlap",_t/4);
+          }
+          set("FKU:sampler","seed",Math.floor(Math.random()*999999999999));
+          set("FKU:save","filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave("FKU:save");
+
+          // Optional pre-resize: shrink the source BEFORE the ×factor pass. Injected between
+          // LoadImage and JoinImageWithAlpha so image and alpha stay the same size.
+          const _preL=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+          if(_preL>0){
+            const d=_upDims._getDims();
+            if(d.w&&d.h&&Math.max(d.w,d.h)!==_preL){
+              const s=_preL/Math.max(d.w,d.h);
+              const pw=Math.max(16,Math.round(d.w*s));
+              const ph=Math.max(16,Math.round(d.h*s));
+              prompt["FKU:pre_scale"]={
+                class_type:"ImageScale",
+                inputs:{image:["FKU:img",0],upscale_method:"lanczos",width:pw,height:ph,crop:"disabled"},
+                _meta:{title:"Pre-resize source"},
+              };
+              prompt["FKU:join"].inputs.image=["FKU:pre_scale",0];
+            }
+          }
+
         // ── INPAINT workflow patching ───────────────────────────────────────
-        if(isInpaintMode){
+        } else if(isInpaintMode){
           const WFI={
             model:"FKI:194", kv:"FKI:216", textEnc:"FKI:195", vae:"FKI:196",
             promptPos:"FKI:6", promptNeg:"FKI:190",
@@ -7544,11 +9850,60 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           else set(WFI.model,"unet_name",S.model||"flux-2-klein-9b-kv.safetensors");
           if(extClip){ delete prompt[WFI.textEnc]; prompt[WFI.promptPos].inputs.clip=extClip; }
           else set(WFI.textEnc,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
-          if(extVae){ delete prompt[WFI.vae]; prompt["FKI:206"].inputs.vae=extVae; prompt["FKI:210"].inputs.vae=extVae; prompt["FKI:164"].inputs.vae=extVae; }
+          if(extVae){ delete prompt[WFI.vae]; prompt["FKI:206"].inputs.vae=extVae; prompt["FKI:210"].inputs.vae=extVae; prompt["FKI:164"].inputs.vae=extVae; if(prompt["FKI:ref2vae"]) prompt["FKI:ref2vae"].inputs.vae=extVae; }
           else set(WFI.vae,"vae_name",S.vae||"flux2-vae.safetensors");
           set(WFI.promptPos,"text",      _effectivePrompt);
           set(WFI.loadImg,  "image",     _paintSlot.name||"example.png");
           set(WFI.loadMask, "image",     _maskName||"example_mask.png");
+
+          // Optional reference image (reference-guided inpainting). When a reference is set,
+          // chain the extra ReferenceLatent pair (FKI:204b/205b) into InpaintModelConditioning
+          // so the model sees the reference alongside the cropped source context. When absent,
+          // strip the ref nodes entirely so ComfyUI doesn't fail loading the placeholder image.
+          //
+          // Guard against a STALE reference (issue #48): S.inpaintRefName persists across
+          // sessions, but ComfyUI's input/ folder does not — an uploaded reference can be gone
+          // on a later run. Taking the reference branch then submits a LoadImage for a missing
+          // file, which ComfyUI reports as "Exception when validating inner node: 'FKI:204b'".
+          // So verify the file still exists first; if not, drop it and fall back to plain inpaint.
+          if(_paintRefName){
+            let _refExists=true;
+            try{
+              const _rr=await fetch(
+                api.apiURL(`/view?filename=${encodeURIComponent(_paintRefName)}&type=input&subfolder=&t=${Date.now()}`),
+                {method:"GET",cache:"no-store"}
+              );
+              _refExists=_rr.ok;
+            }catch(e){ _refExists=false; }
+            if(!_refExists){
+              // Reference file is gone — clear the stale state and continue as plain inpaint.
+              _paintRefName=null;
+              S.inpaintRefName=null; persist();
+              try{ _refSlot._restorePreview(null); }catch(e){}
+            }
+          }
+          if(_paintRefName){
+            set("FKI:ref2img","image",_paintRefName);
+            prompt["FKI:210"].inputs.positive=["FKI:204b",0];
+            prompt["FKI:210"].inputs.negative=["FKI:205b",0];
+            // Downscale the reference before VAE encode (same as EDIT/Sketch). A full-res
+            // reference latent is processed at every sampling step and is the main reason
+            // reference inpainting is slower — capping it to N MP speeds it up a lot.
+            if(S.downscaleRef){
+              const mp=+(S.downscaleRefMP)>0?+(S.downscaleRefMP):1.0;
+              prompt["FKI:refScale"]={
+                class_type:"ImageScaleToTotalPixels",
+                inputs:{image:["FKI:ref2img",0],upscale_method:"lanczos",megapixels:mp,resolution_steps:1},
+                _meta:{title:"Scale Reference (downscale)"},
+              };
+              prompt["FKI:ref2vae"].inputs.pixels=["FKI:refScale",0];
+            }
+          } else {
+            delete prompt["FKI:ref2img"];
+            delete prompt["FKI:ref2vae"];
+            delete prompt["FKI:204b"];
+            delete prompt["FKI:205b"];
+          }
 
           // Resize source image + mask by longer side if enabled in inpaint bar
           const {w:_inpFW,h:_inpFH,resized:_inpResized}=_inpCalcDims();
@@ -7571,6 +9926,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(S.randomizeSeed){S.seed=seed;seedInp.setVal(seed);_advSeedInp.setVal(seed);_advSeedRefresh();persist();}
           set(WFI.sampler,"seed",seed); _setAdv(WFI.sampler);
           set(WFI.save,"filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave(WFI.save);
+          _applyBatchRepeat(WFI.sampler,"latent_image"); // latent from InpaintModelConditioning
 
           // KV cache: inpaint workflow already has FKI:216 FluxKVCache wired.
           // If KV not selected, bypass it by wiring UNETLoader directly to KSampler model chain.
@@ -7621,6 +9978,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           }
           set(WFI.crop,"output_target_width",cropTargetW);
           set(WFI.crop,"output_target_height",cropTargetH);
+          // Seam feather — how far the fill blends into the original at the mask edge.
+          // 0 = Auto: leave the workflow default (32px) untouched. >0 overrides it.
+          if(+S.inpFeather>0) set(WFI.crop,"mask_blend_pixels",Math.min(64,+S.inpFeather));
+
+          // Denoise — how much of the masked area is regenerated. Default 1.0 = full
+          // repaint (unchanged behaviour); lower keeps more of the original under the mask.
+          set(WFI.sampler,"denoise",Math.max(0,Math.min(1,S.inpaintDenoise!==undefined?+S.inpaintDenoise:1.0)));
 
         } else if(isOutpaintMode){
           // outpaint_workflow.json receives:
@@ -7647,7 +10011,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           const seed=S.randomizeSeed?Math.floor(Math.random()*999999999999):S.seed;
           if(S.randomizeSeed){S.seed=seed;seedInp.setVal(seed);_advSeedInp.setVal(seed);_advSeedRefresh();persist();}
           set(WFO.sampler,"seed",seed); _setAdv(WFO.sampler);
+          // Outpaint MUST always run at full denoise — the new area starts as empty padding,
+          // so anything below 1.0 leaves it grey/unfilled. The inpaint "Change strength" slider
+          // (S.inpaintDenoise) and the advanced-UI denoise must never leak into outpaint.
+          set(WFO.sampler,"denoise",1);
           set(WFO.save,"filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave(WFO.save);
+          _applyBatchRepeat(WFO.sampler,"latent_image"); // latent from InpaintModelConditioning
 
           // Resize padded image + mask by longer side if enabled
           const {w:_opFW,h:_opFH,resized:_opResized}=_opCalcDims();
@@ -7711,6 +10081,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             }
           }
           set(WFF.save,   "filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave(WFF.save);
+          _applyBatchEmpty("FKF:230"); // EmptyFlux2LatentImage → sampler
           // Face LoRA — always set from Settings (validated before reaching here)
           set(WFF.lora,"lora_name",S.fsLora);
 
@@ -7727,6 +10099,118 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           const fsLoRaRef=_applyLoRAs("FKF:226","FKF:");
           set(WFF.sampling,"model",typeof fsLoRaRef==="string"?[fsLoRaRef,0]:fsLoRaRef);
 
+        } else if(isPoseMode){
+          // ── POSE workflow patching (RefControl, single-phase) ─────────────
+          // Pose image -> DWPose skeleton (structure); Reference image (appearance).
+          // Both feed the refcontrol poses LoRA via dual ReferenceLatent chains.
+          const WFP={
+            clip:"FKP:clip", vae:"FKP:vae", unet:"FKP:unet", lora:"FKP:lora",
+            poseImg:"FKP:poseimg", refImg:"FKP:refimg",
+            poseScale:"FKP:posescale", refScale:"FKP:refscale",
+            prompt:"FKP:prompt", guider:"FKP:guider", sampler:"FKP:sampler",
+            sched:"FKP:sched", noise:"FKP:noise", size:"FKP:size", save:"FKP:save",
+          };
+
+          // Loaders — honour external model/clip/vae inputs.
+          if(extModel){ delete prompt[WFP.unet]; prompt[WFP.lora].inputs.model=extModel; }
+          else set(WFP.unet,"unet_name",S.model||"flux-2-klein-9b.safetensors");
+          if(extClip){ delete prompt[WFP.clip]; prompt[WFP.prompt].inputs.clip=extClip; }
+          else set(WFP.clip,"clip_name",S.textEncoder||"qwen_3_8b_fp8mixed.safetensors");
+          if(extVae){
+            delete prompt[WFP.vae];
+            ["FKP:poseenc","FKP:refenc","FKP:decode"].forEach(id=>{ if(prompt[id]) prompt[id].inputs.vae=extVae; });
+          } else set(WFP.vae,"vae_name",S.vae||"flux2-vae.safetensors");
+
+          set(WFP.poseImg,"image",S.poseImage||"placeholder.png");
+          set(WFP.refImg, "image",S.poseRef||"placeholder.png");
+          set(WFP.save,   "filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave(WFP.save);
+          _applyBatchEmpty("FKP:latent"); // EmptyFlux2LatentImage → SamplerCustomAdvanced
+
+          // DWPose detect resolution = the pose image's shorter side (snapped to 64),
+          // so the skeleton keeps the pose image's resolution/aspect instead of the
+          // default 512. Clamped to a sane range.
+          {
+            const pd=_poseImgDims._getDims();
+            if(pd.w&&pd.h){
+              let res=Math.round(Math.min(pd.w,pd.h)/64)*64;
+              res=Math.max(512,Math.min(2048,res));
+              set("FKP:dwpose","resolution",res);
+            }
+          }
+
+          // Resolve the refcontrol poses LoRA against the model list (handles subfolders).
+          const _ndl=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
+          const _resolveLora=(want)=>{
+            if(!want) return want;
+            return (_loraList||[]).find(o=>_ndl(o)===_ndl(want))||
+              (_loraList||[]).find(o=>_ndl(o).split("/").pop()===_ndl(want).split("/").pop())||want;
+          };
+          set(WFP.lora,"lora_name",_resolveLora(S.poseLora));
+
+          // Prompt: the refcontrol trigger phrase must always be present (it activates
+          // the pose LoRA). The user's text, if any, is appended after it — so an empty
+          // prompt box still works, and a custom description never drops the trigger.
+          const _POSE_TRIGGER="apply pose from image 1 with reference from image 2";
+          let _posePrompt=_POSE_TRIGGER;
+          const _ut=_effectivePrompt.trim();
+          if(_ut){
+            _posePrompt=/apply pose from image 1 with reference from image 2/i.test(_ut)
+              ? _ut                       // user already included the trigger
+              : _POSE_TRIGGER+". "+_ut;    // prepend the trigger
+          }
+          set(WFP.prompt,"text",_posePrompt);
+
+          // Downscale toggle: control the scale-node megapixels, or bypass them.
+          // The pose scale takes the DWPose skeleton; bypass feeds raw skeleton/ref.
+          if(S.downscaleRef){
+            const mp=+(S.downscaleRefMP)>0?+(S.downscaleRefMP):1.0;
+            set(WFP.poseScale,"megapixels",mp);
+            set(WFP.refScale,"megapixels",mp);
+          } else {
+            if(prompt["FKP:poseenc"]) prompt["FKP:poseenc"].inputs.pixels=["FKP:dwpose",0];
+            if(prompt[WFP.size]) prompt[WFP.size].inputs.image=["FKP:dwpose",0];
+            if(prompt["FKP:refenc"]) prompt["FKP:refenc"].inputs.pixels=[WFP.refImg,0];
+            delete prompt[WFP.poseScale]; delete prompt[WFP.refScale];
+          }
+
+          // Output size MUST match the skeleton that drives the pose conditioning,
+          // otherwise the pose won't line up (shifted / wrong scale). So we never
+          // override the latent dims directly — we let GetImageSize read the scaled
+          // skeleton (FKP:size <- FKP:posescale). The badge/scale only changes HOW
+          // MUCH the skeleton (and reference) get scaled, via the megapixels value:
+          //   - Pose badge active  -> use the pose image's native megapixels
+          //   - Pose badge off     -> scale so the longer side = poseResizeLonger
+          // The downscale toggle above may already set a fixed megapixels; the pose
+          // size choice takes precedence here when set.
+          {
+            const pd=_poseImgDims._getDims();
+            if(pd.w&&pd.h&&prompt[WFP.poseScale]){
+              let targetLonger;
+              if(S.poseUseSizeSource==="pose"){
+                targetLonger=Math.max(pd.w,pd.h); // native size
+              } else if(S.poseResizeLonger>0){
+                targetLonger=S.poseResizeLonger;  // scale by longer side
+              }
+              if(targetLonger>0){
+                const longer=Math.max(pd.w,pd.h);
+                const scale=targetLonger/longer;
+                const mp=(pd.w*scale*pd.h*scale)/1000000;
+                if(mp>0) set(WFP.poseScale,"megapixels",Math.max(0.05,mp));
+              }
+            }
+          }
+
+          // Seed + advanced control distributed across the split sampler.
+          const seedP=S.randomizeSeed?Math.floor(Math.random()*999999999999):S.seed;
+          if(S.randomizeSeed){S.seed=seedP;seedInp.setVal(seedP);_advSeedInp.setVal(seedP);_advSeedRefresh();persist();}
+          set(WFP.noise,"noise_seed",seedP);
+          const _poseSteps=S.advancedUI?(S.steps||4):4;
+          const _poseCfg=S.advancedUI?(S.cfg!==undefined?S.cfg:1):1;
+          set(WFP.sched,"steps",_poseSteps);
+          set(WFP.guider,"cfg",_poseCfg);
+          if(S.advancedUI) set(WFP.sampler,"sampler_name",S.sampler||"er_sde");
+
         } else if(isI2IMode){
           // ── I2I workflow patching ──────────────────────────────────────────
           if(extModel){ delete prompt["FK:165"]; }
@@ -7738,8 +10222,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           set("FK:166","text",       _effectivePrompt);
           set("FKI2I:img","image",   S.i2iImage||"placeholder.png");
           set("FK:86","filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave("FK:86");
+          _applyBatchRepeat("FK:171","latent_image"); // latent from VAEEncode → repeat for batch
 
-          // Resize input image by longer side if enabled
+          // Resize input image by longer side if enabled (explicit user override).
+          // NOTE: the global "downscale reference" toggle is intentionally NOT applied
+          // in I2I — here the latent IS the input image (img2img with denoise < 1),
+          // so the encoded size also defines the OUTPUT size. Shrinking it would shrink
+          // the result. Output size is therefore driven by the size badge or this
+          // longer-side resize only.
           if(S.i2iResizeLonger>0){
             const dims=_i2iDims._getDims();
             if(dims.w&&dims.h){
@@ -7799,6 +10290,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           set(WF.promptPos,"text",_effectivePrompt);
           set(WF.promptNeg,"text",DEFAULT_NEG_PROMPT);
           set(WF.saveImage,"filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave(WF.saveImage);
+          // Batch: T2I, EDIT and SKETCH all feed EmptyFlux2LatentImage (WF.latent)
+          // into the sampler, so a batch_size there produces N images.
+          _applyBatchEmpty(WF.latent);
 
           // ── T2I ──────────────────────────────────────────────────────────
           if(activePill==="t2i"){
@@ -7851,6 +10346,29 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               set(WF.sampler,"positive",[WF.refPos1,0]);
               set(WF.sampler,"negative",[WF.refNeg1,0]);
             }
+
+            // Reference downscale toggle — applies to EDIT and SKETCH (both send
+            // the input/canvas into the VAE encoder through this workflow).
+            if(S.downscaleRef){
+              // ON: route VAE encode through the scale node and set megapixels.
+              // (Sketch + img1-source paths normally bypass the scale node, so we
+              // must re-wire the encoder onto it here, not just set megapixels.)
+              const mp=+(S.downscaleRefMP)>0?+(S.downscaleRefMP):1.0;
+              if(prompt[WF.scaleImg1]){
+                prompt[WF.scaleImg1].inputs.megapixels=mp;
+                if(prompt[WF.vaeEnc1]) prompt[WF.vaeEnc1].inputs.pixels=[WF.scaleImg1,0];
+              }
+              if(prompt[WF.scaleImg2]){
+                prompt[WF.scaleImg2].inputs.megapixels=mp;
+                if(prompt[WF.vaeEnc2]) prompt[WF.vaeEnc2].inputs.pixels=[WF.scaleImg2,0];
+              }
+            } else {
+              // OFF: bypass scale nodes — VAE-encode the full-resolution inputs.
+              if(prompt[WF.vaeEnc1]) prompt[WF.vaeEnc1].inputs.pixels=[WF.loadImage1,0];
+              if(prompt[WF.vaeEnc2]) prompt[WF.vaeEnc2].inputs.pixels=[WF.loadImage2,0];
+              delete prompt[WF.scaleImg1];
+              delete prompt[WF.scaleImg2];
+            }
           }
         }
 
@@ -7860,7 +10378,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             body:JSON.stringify({prompt,client_id:api.clientId,extra_data:{enable_previews:true}}),
           });
           const result=await resp.json();
-          const wfErrs=Object.entries(result.node_errors||{}).filter(([k])=>k!==String(self.id));
+          const wfErrs=Object.entries(result.node_errors||{}).filter(([k])=>k!==String(_liveId()));
           if(result.error){
             showError(fmtErr(result.error));resetBtn();
           }else if(wfErrs.length){
@@ -7875,13 +10393,46 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       // ── PILL VISIBILITY ───────────────────────────────────────────────────
+      // UPSCALE keeps the full layout (prompt box, seed row, batch, advanced) so switching
+      // modes doesn't reflow the panel and both layouts keep working — the controls SeedVR2
+      // doesn't use are just dimmed and made inert.
+      const _setUpscaleDisabled=(off)=>{
+        const dim=(el,disabled)=>{
+          if(!el) return;
+          el.style.opacity=disabled?"0.35":"";
+          el.style.pointerEvents=disabled?"none":"";
+        };
+        dim(promptWrap,off);
+        dim(seedRow,off);
+        dim(_batchWrap,off);
+        dim(advPanel,off);
+        if(promptTA) promptTA.disabled=!!off;
+      };
+
       function updatePillVisibility(){
+        const isUpscale=activePill==="upscale";
         i2iPanel.style.display=activePill==="i2i"?"flex":"none";
         editPanel.style.display=activePill==="edit"?"flex":"none";
         inpaintPanel.style.display=activePill==="inpaint"?"flex":"none";
         faceswapPanel.style.display=activePill==="faceswap"?"flex":"none";
-        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i")?"none":"flex";
+        posePanel.style.display=activePill==="pose"?"flex":"none";
+        upscalePanel.style.display=isUpscale?"flex":"none";
+        if(activePill==="pose") _poseApplyBadges();
+        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="pose"||isUpscale)?"none":"flex";
+        // UPSCALE takes no prompt, no seed and no sampler settings (SeedVR2 is a fixed
+        // 1-step pass), and it can't batch. Keep those controls in place but DISABLED so the
+        // layout stays identical across modes (and both layout options keep working).
+        // Batch split-button: shown in every mode (it starts hidden), dimmed in UPSCALE.
+        _batchWrap.style.display="block";
+        _setUpscaleDisabled(isUpscale);
+        if(!S.generating) tx(genBtn,isUpscale?"Upscale":"Generate");
+        // Mirror _advRefresh()'s rules (advanced panel is dimmed, not hidden, in UPSCALE).
+        if(_seedLockedWarn) _seedLockedWarn.style.display=(!isUpscale&&!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
+        if(advPanel) advPanel.style.display=S.advancedUI?"flex":"none";
+        autoSaveTog.style.display="flex";
+        _refreshQuickUp();
         updateSizeControls();
+        if(typeof _refreshPaintBatchNote==="function") _refreshPaintBatchNote();
       }
 
       // ── mkHeart helper (used by gallery) ─────────────────────────────────
@@ -7902,6 +10453,61 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         opacity:"0",transition:"opacity .22s ease, transform .22s ease",
         transform:"translateY(6px)",
       });
+
+      // ── Gallery thumbnail right-click context menu ────────────────────────
+      let _galCtxImg=null;
+      const _galCtxMenu=mk("div",{
+        position:"fixed",zIndex:"999999",background:C.bg1,
+        border:`1px solid ${C.borderH}`,borderRadius:"8px",
+        minWidth:"170px",display:"none",flexDirection:"column",
+        boxShadow:"0 4px 20px rgba(0,0,0,.7)",overflow:"hidden",
+      });
+      const _mkGalCtxItem=(label,icon,onClick)=>{
+        const row=mk("div",{
+          padding:"7px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
+          cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",
+          transition:"background .1s,color .1s",userSelect:"none",
+        });
+        const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});
+        tx(ico,icon);
+        const lbl=mk("span",{}); tx(lbl,label);
+        row.append(ico,lbl);
+        row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};
+        row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};
+        row.onclick=()=>{ _galCtxMenu.style.display="none"; onClick(); };
+        return row;
+      };
+      const _mkGalCtxSec=(label)=>{
+        const h=mk("div",{padding:"6px 12px 3px",fontSize:"8px",fontWeight:"700",
+          letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none"});
+        tx(h,label);return h;
+      };
+      const _mkGalCtxDiv=()=>mk("div",{height:"1px",background:C.border,margin:"2px 0"});
+      _galCtxMenu.append(
+        _mkGalCtxSec("I2I"),
+        _mkGalCtxItem("I2I slot","⟳",()=>{ if(_galCtxImg)_loadIntoI2ISlot(_galCtxImg); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Edit"),
+        _mkGalCtxItem("Image 1","①",()=>{ if(_galCtxImg)_loadIntoSlot(_galCtxImg,1); }),
+        _mkGalCtxItem("Image 2","②",()=>{ if(_galCtxImg)_loadIntoSlot(_galCtxImg,2); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Paint"),
+        _mkGalCtxItem("Paint slot","✏",()=>{ if(_galCtxImg)_loadIntoPaintSlot(_galCtxImg); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Faceswap"),
+        _mkGalCtxItem("Target","◎",()=>{ if(_galCtxImg)_loadIntoFsSlot(_galCtxImg,"target"); }),
+        _mkGalCtxItem("Source","◈",()=>{ if(_galCtxImg)_loadIntoFsSlot(_galCtxImg,"source"); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Pose"),
+        _mkGalCtxItem("Pose","◇",()=>{ if(_galCtxImg)_loadIntoPoseSlot(_galCtxImg,"pose"); }),
+        _mkGalCtxItem("Reference","◈",()=>{ if(_galCtxImg)_loadIntoPoseSlot(_galCtxImg,"ref"); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Upscale"),
+        _mkGalCtxItem("Upscale slot","↑",()=>{ if(_galCtxImg)_loadIntoUpscaleSlot(_galCtxImg); }),
+      );
+      document.body.appendChild(_galCtxMenu);
+      document.addEventListener("click",()=>{ _galCtxMenu.style.display="none"; });
+      document.addEventListener("keydown",(e)=>{ if(e.key==="Escape") _galCtxMenu.style.display="none"; });
 
       // Gallery header
       const galHdr=mk("div",{display:"flex",alignItems:"center",justifyContent:"space-between",
@@ -8118,13 +10724,61 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       lbFavBtn.onmouseleave=()=>_lbFavApplyStyle(false);
       lbFavBtn.appendChild(_mkHeart("14px"));
 
-      // Open folder button
+      // "Set as output" button — makes the viewed gallery image this node's IMAGE output, so
+      // the user can feed an older result into a pipeline wired after the node. It only SETS
+      // the output (does not run the graph); the user presses Run when ready. The next real
+      // generation overwrites it automatically (showFinal/showTemp call _pushOutput), so a
+      // gallery pick never "sticks" past the next generate.
+      const lbSetOutBtn=mk("button",{
+        background:"transparent",border:`1px solid ${C.border}`,
+        borderRadius:"6px",padding:"0 10px",fontSize:"10px",color:C.muted,
+        cursor:"pointer",outline:"none",transition:"border-color .15s,color .15s",
+        alignSelf:"stretch",display:"flex",alignItems:"center",gap:"4px",
+        marginLeft:"auto",whiteSpace:"nowrap"}); // marginLeft:auto pushes THIS + lbOpenBtn to the right edge
+      const _lbOutSvg=(()=>{
+        const s=document.createElementNS("http://www.w3.org/2000/svg","svg");
+        s.setAttribute("viewBox","0 0 24 24");s.setAttribute("width","12");s.setAttribute("height","12");
+        s.setAttribute("fill","none");s.setAttribute("stroke","currentColor");s.setAttribute("stroke-width","2");
+        s.setAttribute("stroke-linecap","round");s.setAttribute("stroke-linejoin","round");s.style.flexShrink="0";
+        s.innerHTML=`<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>`;
+        return s;
+      })();
+      lbSetOutBtn.appendChild(_lbOutSvg);
+      const _lbSetOutLbl=mk("span");tx(_lbSetOutLbl,"Set as output");lbSetOutBtn.appendChild(_lbSetOutLbl);
+      lbSetOutBtn.onmouseenter=()=>{ if(lbSetOutBtn.disabled)return; lbSetOutBtn.style.borderColor=LIME;lbSetOutBtn.style.color=LIME; };
+      lbSetOutBtn.onmouseleave=()=>{ if(lbSetOutBtn.disabled)return; lbSetOutBtn.style.borderColor=C.border;lbSetOutBtn.style.color=C.muted; };
+      // Enable only when this node's IMAGE output has a downstream wire — otherwise setting an
+      // output that goes nowhere is meaningless. Called from _lbShow when a gallery image opens.
+      const _lbRefreshSetOut=()=>{
+        const n=app.graph.getNodeById(_liveId());
+        const out=n&&n.outputs&&n.outputs[0];
+        const linked=!!(out&&out.links&&out.links.length>0);
+        lbSetOutBtn.disabled=!linked;
+        lbSetOutBtn.style.opacity=linked?"1":"0.4";
+        lbSetOutBtn.style.cursor=linked?"pointer":"not-allowed";
+        lbSetOutBtn.title=linked
+          ?"Make this image the node's output. Press Run to send it through the connected pipeline."
+          :"Connect the node's image output to something first.";
+      };
+      lbSetOutBtn.onclick=()=>{
+        if(lbSetOutBtn.disabled) return;
+        const v=_lbActiveImg; if(!v) return;
+        // Point the node output at this gallery image (type output — it lives in the gallery).
+        _lastGenObj={filename:v.filename,subfolder:v.subfolder||"",type:"output"};
+        _pushOutput(_lastGenObj);
+        // Brief confirmation, then restore the label.
+        tx(_lbSetOutLbl,"✓ Output set");lbSetOutBtn.style.color=LIME;lbSetOutBtn.style.borderColor=LIME;
+        setTimeout(()=>{ tx(_lbSetOutLbl,"Set as output");lbSetOutBtn.style.color=C.muted;lbSetOutBtn.style.borderColor=C.border; },1400);
+      };
+
+      // Open folder button (sits right after "Set as output" — the marginLeft:auto on that one
+      // pushes the whole right-hand group over, so this one does NOT repeat marginLeft:auto).
       const lbOpenBtn=mk("button",{
         background:"transparent",border:`1px solid ${C.border}`,
         borderRadius:"6px",padding:"0 10px",fontSize:"10px",color:C.muted,
         cursor:"pointer",outline:"none",transition:"border-color .15s,color .15s",
         alignSelf:"stretch",display:"flex",alignItems:"center",gap:"4px",
-        marginLeft:"auto",whiteSpace:"nowrap"});
+        whiteSpace:"nowrap"});
       // Folder SVG icon
       const _lbFolderSvg=(()=>{
         const s=document.createElementNS("http://www.w3.org/2000/svg","svg");
@@ -8164,15 +10818,16 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const _lbUseDrop=mk("div",{
         position:"absolute",bottom:"calc(100% + 5px)",left:"0",
         background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"8px",
-        minWidth:"170px",overflow:"hidden",display:"none",zIndex:"200",
-        boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        minWidth:"170px",overflowY:"auto",overflowX:"hidden",display:"none",zIndex:"200",
+        maxHeight:"min(420px, 80vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,padding:"3px 0",
       });
 
       // Section header inside dropdown
       const _mkDropSection=(label)=>{
         const h=mk("div",{
-          padding:"6px 12px 3px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",
-          textTransform:"uppercase",color:C.muted,userSelect:"none",
+          padding:"2px 12px 1px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",
+          textTransform:"uppercase",color:C.muted,userSelect:"none",lineHeight:"1.3",
         });
         tx(h,label);return h;
       };
@@ -8180,9 +10835,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // Clickable slot item inside dropdown
       const _mkDropItem=(label,icon,onClick)=>{
         const row=mk("div",{
-          padding:"7px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
+          padding:"3px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
           cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",
-          transition:"background .1s,color .1s",userSelect:"none",
+          transition:"background .1s,color .1s",userSelect:"none",lineHeight:"1.4",
         });
         const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});
         tx(ico,icon);
@@ -8195,7 +10850,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       // Thin divider between sections
-      const _mkDropDivider=()=>mk("div",{height:"1px",background:C.border,margin:"2px 0"});
+      const _mkDropDivider=()=>mk("div",{height:"1px",background:C.border,margin:"0"});
 
       // Build dropdown items
       _lbUseDrop.append(
@@ -8212,6 +10867,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkDropSection("Faceswap"),
         _mkDropItem("Target","◎",()=>{ const v=_lbActiveImg;if(v)_loadIntoFsSlot(v,"target"); }),
         _mkDropItem("Source","◈",()=>{ const v=_lbActiveImg;if(v)_loadIntoFsSlot(v,"source"); }),
+        _mkDropDivider(),
+        _mkDropSection("Pose"),
+        _mkDropItem("Pose","◇",()=>{ const v=_lbActiveImg;if(v)_loadIntoPoseSlot(v,"pose"); }),
+        _mkDropItem("Reference","◈",()=>{ const v=_lbActiveImg;if(v)_loadIntoPoseSlot(v,"ref"); }),
+        _mkDropDivider(),
+        _mkDropSection("Upscale"),
+        _mkDropItem("Upscale slot","↑",()=>{ const v=_lbActiveImg;if(v)_loadIntoUpscaleSlot(v); }),
       );
 
       let _lbDropOpen=false;
@@ -8275,7 +10937,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         });
       };
 
-      lbInfoRow.append(lbChipRes,lbChipMode,lbChipAdv,lbImgThumb,lbImgThumb2,lbRestoreBtn,_lbUseWrap,lbFavBtn,lbDelBtn,lbOpenBtn);
+      lbInfoRow.append(lbChipRes,lbChipMode,lbChipAdv,lbImgThumb,lbImgThumb2,lbRestoreBtn,_lbUseWrap,lbFavBtn,lbDelBtn,lbSetOutBtn,lbOpenBtn);
 
       // LoRA row — subtle, hidden when no loras
       const lbLoraRow=mk("div",{display:"none",gap:"4px",flexWrap:"wrap",alignItems:"center"});
@@ -8371,6 +11033,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const lbShow=async(v,idx)=>{
         _lbActiveImg=v;
         _lbIdx=idx??0;
+        _lbRefreshSetOut(); // enable/disable "Set as output" by whether our image output is wired
         tx(lbFilename,v.filename);
         lbImg.src=_galImgUrl(v)+"&t="+v.mtime;
         lbMeta.style.display="none";lbRestoreBtn.style.display="none";
@@ -8494,6 +11157,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             if(meta.image2){ const n=await _ri(meta.image2); if(n){S.fsSource=n;_fsSourceSlot._restorePreview(n);} }
           } else if(mode==="sketch"||mode==="inpaint"||mode==="outpaint"){
             if(meta.image1){ const n=await _ri(meta.image1); if(n){ _sketchSaving=true;_paintSlot._restorePreview(n);_sketchSaving=false; } }
+            // Inpaint denoise (slider re-syncs from S when the mask editor opens)
+            S.inpaintDenoise=(mode==="inpaint"&&meta.inpaintDenoise!==undefined)?Math.max(0,Math.min(1,+meta.inpaintDenoise)):1.0;
           }
           // Advanced params — only restore if explicitly saved with advancedUI:true
           if(meta.advancedUI===true){
@@ -8507,10 +11172,21 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             S.randomizeSeed=false; S.seed=meta.seed;
             seedInp.setVal(meta.seed); _advSeedInp.setVal(meta.seed); _advSeedRefresh();
           }
-          // LoRAs — always reset all slots first, then apply what meta has
+          // LoRAs — grow slots if the saved generation used more than we currently show
+          const _metaLoraCount=Array.isArray(meta.userLoras)?meta.userLoras.length:0;
+          const _wantSlots=Math.min(_UL_MAX,Math.max(_UL_DEFAULT,_metaLoraCount));
+          if(S.userLoras.length!==_wantSlots){
+            if(S.userLoras.length<_wantSlots){
+              while(S.userLoras.length<_wantSlots) S.userLoras.push({name:"",strength:1.0,enabled:true});
+            } else {
+              S.userLoras.length=_wantSlots;
+            }
+            _ulRebuildRows();
+          }
+          // Always reset all slots first (incl. trigger rows + enabled state), then apply what meta has
           _ulRowEls.forEach((r,i)=>{
-            S.userLoras[i]={name:"",strength:0};
-            r._dd.set("none"); r._str.value="0";
+            S.userLoras[i]={name:"",strength:0,enabled:true};
+            r._reset();
           });
           if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
             const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
@@ -8521,8 +11197,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               const match=loraOpts.find(o=>nd(o)===nd(ul.n||""))||
                 loraOpts.find(o=>nd(o).split("/").pop()===basename);
               if(match&&match!=="none"){
-                S.userLoras[i].name=match; S.userLoras[i].strength=+(ul.s??1);
+                S.userLoras[i].name=match; S.userLoras[i].strength=+(ul.s??1); S.userLoras[i].enabled=true;
                 _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(S.userLoras[i].strength);
+                _ulRowEls[i]._refreshTrig(match); _ulRowEls[i]._applyEnabled();
               }
             });
           }
@@ -8565,7 +11242,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // Upload an output image into ComfyUI's input folder so LoadImage can reference it.
       // Returns the uploaded input filename, or null on failure.
       const _uploadOutputToInput=async(v)=>{
-        const outputUrl=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=output&subfolder=${encodeURIComponent(v.subfolder||"")}`);
+        // Respect the source type — unsaved temp results live in the temp folder, not
+        // output; fetching them as "output" would grab a wrong (or missing) file.
+        const outputUrl=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=${encodeURIComponent(v.type||"output")}&subfolder=${encodeURIComponent(v.subfolder||"")}`);
         const resp=await fetch(outputUrl);
         if(!resp.ok) throw new Error("fetch "+resp.status);
         const blob=await resp.blob();
@@ -8658,6 +11337,32 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         closeOverlayFade(galleryOverlay);
       };
 
+      const _loadIntoPoseSlot=async(v,which)=>{
+        if(activePill!=="pose") setPill("pose");
+        let inputName;
+        try{ inputName=await _uploadOutputToInput(v); }
+        catch(err){ console.warn("[FluxKlein] load-into-pose:",err); inputName=v.filename; }
+        if(which==="ref"){
+          S.poseRef=inputName; _poseRefSlot._restorePreview(inputName);
+        } else {
+          S.poseImage=inputName; _poseImgSlot._restorePreview(inputName);
+        }
+        persist();
+        lightbox.style.display="none";_lbActiveImg=null;
+        closeOverlayFade(galleryOverlay);
+      };
+
+      const _loadIntoUpscaleSlot=async(v)=>{
+        if(activePill!=="upscale") setPill("upscale");
+        let inputName;
+        try{ inputName=await _uploadOutputToInput(v); }
+        catch(err){ console.warn("[FluxKlein] load-into-upscale:",err); inputName=v.filename; }
+        S.upscaleImage=inputName; _upSlot._restorePreview(inputName);
+        persist();
+        lightbox.style.display="none";_lbActiveImg=null;
+        closeOverlayFade(galleryOverlay);
+      };
+
       // mkApplyIcon for Load button (same as LTX node)
       const _mkApplyIcon=(size)=>{
         size=size||"13px";
@@ -8722,6 +11427,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           cell.onmouseleave=()=>{ cell.style.borderColor=C.border;ov.style.opacity="0"; };
 
           cell.onclick=()=>{ _lbNavList=images; lbShow(v,idx); };
+          cell.addEventListener("contextmenu",(e)=>{
+            e.preventDefault();
+            _galCtxImg=v;
+            _galCtxMenu.style.display="flex";
+            _galCtxMenu.style.left=e.clientX+"px";
+            _galCtxMenu.style.top=e.clientY+"px";
+          });
 
           if(v.favorite===true){
             favIco.style.opacity="1";
@@ -8787,7 +11499,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // _galNeedsRefresh is set to true in showFinal so gallery auto-refreshes on next open
 
       // ── ASSEMBLE ─────────────────────────────────────────────────────────
-      pad.append(topBar,mainRow,promptWrap);
+      pad.append(topBar,mainRow);
+      // Layout mode places promptWrap either in the left column ("tall" → preview
+      // gets full height, good for portrait) or full-width under the preview ("classic").
+      _applyLayout(S.layoutMode);
       root.appendChild(helpOverlay);
       root.appendChild(settingsOverlay);
       root.appendChild(galleryOverlay);
@@ -8806,7 +11521,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       },true);
 
       const _creditEl=mk("div",{
-        position:"absolute",bottom:"5px",left:"12px",right:"12px",
+        position:"absolute",bottom:"1px",left:"12px",right:"12px",
         fontSize:"8px",color:"#555",pointerEvents:"none",
         letterSpacing:".04em",userSelect:"none",zIndex:"1",
         display:"flex",alignItems:"center",justifyContent:"space-between",
@@ -8865,6 +11580,76 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       root.addEventListener("mouseenter",()=>{ _mouseOverRoot=true; });
       root.addEventListener("mouseleave",()=>{ _mouseOverRoot=false; });
 
+      // ── Canvas-like wheel zoom + middle-drag pan over the node ────────────────
+      // Make the node behave like the rest of ComfyUI: wheel over EMPTY node area zooms the
+      // graph, and middle-mouse drag pans it. Interactive elements keep their own behavior —
+      // we forward to the canvas ONLY when the wheel/drag started on non-interactive "chrome".
+      const _fkGraphCanvas=()=>document.querySelector("canvas.litegraph")||document.querySelector("canvas#graph-canvas")||document.querySelector("canvas");
+      // An element is "interactive" (keep native behavior) if it or an ancestor is a form
+      // control, a button, or something that scrolls / captures wheel itself. Everything else
+      // (labels, spacers, panels, the preview image background) is treated as empty node chrome.
+      const _isInteractive=(el)=>{
+        let n=el;
+        for(let i=0;i<12 && n && n!==root; i++){
+          const tag=(n.tagName||"").toUpperCase();
+          if(tag==="TEXTAREA"||tag==="INPUT"||tag==="SELECT"||tag==="BUTTON"||tag==="CANVAS") return true;
+          // Scrollable containers (gallery grid, layers list, presets…) that scroll vertically.
+          if(n.scrollHeight - n.clientHeight > 4){
+            const ov=(n.ownerDocument.defaultView.getComputedStyle(n).overflowY)||"";
+            if(ov==="auto"||ov==="scroll") return true;
+          }
+          // Elements that explicitly mark themselves as wheel-owning (sliders, editors).
+          if(n.dataset && n.dataset.fkWheel==="own") return true;
+          n=n.parentElement;
+        }
+        return false;
+      };
+      // When the Sketch or Mask/Outpaint editor overlay is open, it owns wheel-zoom and
+      // middle-drag pan for its OWN canvas. Our graph zoom/pan must stand down so the two
+      // don't fight (double-panning) while the user is editing.
+      const _fkEditorOpen=()=>(_sketchOv&&_sketchOv.style.display!=="none")||(_maskOv&&_maskOv.style.display!=="none");
+      root.addEventListener("wheel",(e)=>{
+        if(_fkEditorOpen()) return;                     // sketch/mask editor owns wheel-zoom
+        if(_isInteractive(e.target)) return;            // let inputs/sliders/scroll areas handle it
+        const cv=_fkGraphCanvas(); if(!cv) return;
+        cv.dispatchEvent(new WheelEvent("wheel",{
+          deltaY:e.deltaY,deltaX:e.deltaX,clientX:e.clientX,clientY:e.clientY,
+          ctrlKey:e.ctrlKey,metaKey:e.metaKey,bubbles:true,cancelable:true}));
+        e.preventDefault();e.stopPropagation();
+      },{passive:false});
+
+      // Middle-mouse drag → pan the graph. We forward the pointer/mouse sequence to the canvas.
+      // Only start when the press lands on empty chrome (not on a control), so middle-clicking
+      // a button/input still does its own thing.
+      let _fkPanning=false;
+      root.addEventListener("pointerdown",(e)=>{
+        if(e.button!==1) return;                        // middle button only
+        if(_fkEditorOpen()) return;                     // sketch/mask editor owns middle-drag pan
+        if(_isInteractive(e.target)) return;
+        const cv=_fkGraphCanvas(); if(!cv) return;
+        _fkPanning=true;
+        e.preventDefault();e.stopPropagation();
+        const fwd=(type,ev,ptr)=>{
+          const cls=ptr?PointerEvent:MouseEvent;
+          const opts={button:1,buttons:(type==="mouseup"||type==="pointerup")?0:4,
+            clientX:ev.clientX,clientY:ev.clientY,bubbles:true,cancelable:true};
+          if(ptr){opts.pointerId=1;opts.pointerType="mouse";opts.isPrimary=true;}
+          cv.dispatchEvent(new cls(type,opts));
+        };
+        // Forward BOTH pointer and mouse variants — different ComfyUI/litegraph versions listen
+        // on different event families for the middle-button pan.
+        fwd("pointerdown",e,true); fwd("mousedown",e,false);
+        const move=(ev)=>{ if(_fkPanning){ fwd("pointermove",ev,true); fwd("mousemove",ev,false); } };
+        const up=(ev)=>{ if(!_fkPanning) return; _fkPanning=false;
+          fwd("pointerup",ev,true); fwd("mouseup",ev,false);
+          window.removeEventListener("pointermove",move,true);
+          window.removeEventListener("pointerup",up,true); };
+        window.addEventListener("pointermove",move,true);
+        window.addEventListener("pointerup",up,true);
+      });
+      // Suppress the middle-click "autoscroll" / paste that some browsers trigger on the node.
+      root.addEventListener("auxclick",(e)=>{ if(e.button===1 && !_isInteractive(e.target)) e.preventDefault(); });
+
       const _fKeyHandler=(e)=>{
         if(e.key!=="f"&&e.key!=="F") return;
         if(!_mouseOverRoot) return;
@@ -8879,25 +11664,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(_sketchOv.style.display!=="none") return;
         if(_nodeFsOv&&_nodeFsOv.style.display!=="none"){_nodeFsOv._close();return;}
 
-        // Get currently visible image
-        let src="", name="", fsType="image", fsOpts=null;
-        if(comparerWrap.style.display!=="none"&&comparerGenImg.src){
-          src=comparerGenImg.src;
-          name="Before / After";
-          fsType="comparer";
-          fsOpts={
-            genSrc:comparerGenImg.src,
-            baseSrc:comparerBase.src,
-          };
-        } else if(finalImg.style.display!=="none"&&finalImg.src){
-          src=finalImg.src;
-          name=finalImg.src.split("/").pop().split("?")[0]||"Image";
-        }
-        if(!src) return;
-
         e.preventDefault();
         e.stopPropagation();
-        _initNodeFsOverlay()._open(fsType,src,name,fsOpts);
+        // _openFsCurrent handles single image, before/after comparer, and batch nav.
+        _openFsCurrent();
       };
       document.addEventListener("keydown",_fKeyHandler);
 
@@ -8956,6 +11726,36 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         genBtn.click();
       });
 
+      // ── Arrow Left/Right → step through a batch result (any mode) ─────────
+      // Single CAPTURE-phase handler so we grab the arrow keys BEFORE ComfyUI's own
+      // graph navigation (which otherwise moves the node selection along the wires to a
+      // connected prompt-input or image-output node). stopImmediatePropagation keeps the
+      // event from reaching ComfyUI at all. Covers both the node fullscreen overlay and
+      // the in-UI preview; in fullscreen the mouse-over-node check is skipped (it is modal).
+      document.addEventListener("keydown",(e)=>{
+        if(e.key!=="ArrowLeft"&&e.key!=="ArrowRight") return;
+        if(_batchImgs.length<2) return;                 // only when a batch is showing
+        const fsOpen=!!(_nodeFsOv&&_nodeFsOv.style.display!=="none");
+        const dir=e.key==="ArrowRight"?1:-1;
+        if(fsOpen){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+          if(_nodeFsOv._navHook) _nodeFsOv._navHook(dir);
+          return;
+        }
+        // In-UI batch nav: only when the mouse is over this node, no overlay/text field open.
+        if(!_mouseOverRoot) return;
+        const tag=(document.activeElement||{}).tagName||"";
+        if(tag==="INPUT"||tag==="TEXTAREA") return;
+        if(settingsOverlay.style.display!=="none") return;
+        if(galleryOverlay.style.display!=="none") return;
+        if(_promptOverlay.style.display!=="none") return;
+        if(_inspireOverlay.style.display!=="none") return;
+        if(_sketchOv.style.display!=="none") return;
+        if(_maskOv.style.display!=="none") return;
+        e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+        _batchShow(_batchIdx+dir);
+      },true); // capture — must run before ComfyUI's graph navigation
+
       // (fullscreen Esc guard is applied per-handler below)
 
       // ── Escape → close Get Inspired overlay ──────────────────────────────
@@ -8992,6 +11792,58 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(settingsOverlay.style.display!=="none"){ e.preventDefault();e.stopPropagation();closeOverlayFade(settingsOverlay);return; }
         if(helpOverlay.style.display!=="none"){ e.preventDefault();e.stopPropagation();closeOverlayFade(helpOverlay);return; }
       });
+
+      // ── Paste image from clipboard (Ctrl+V) ──────────────────────────────────
+      document.addEventListener("paste",async(e)=>{
+        const _sketchOpen=_sketchOv&&_sketchOv.style.display!=="none";
+        const _maskOpen=_maskOv&&_maskOv.style.display!=="none";
+        if(!_mouseOverRoot&&!_sketchOpen&&!_maskOpen) return;
+        const tag=(document.activeElement||{}).tagName||"";
+        if(tag==="INPUT"||tag==="TEXTAREA") return;
+        const items=[...(e.clipboardData?.items||[])];
+        const imgItem=items.find(i=>i.type.startsWith("image/"));
+        if(!imgItem) return;
+        e.preventDefault();e.stopPropagation();
+        const raw=imgItem.getAsFile();
+        if(!raw) return;
+        // Clipboard files all share the same generic name ("image.png"), so two
+        // pastes would overwrite each other in the input folder (overwrite:true)
+        // and both slots would end up pointing at the same file. Give each paste
+        // a unique name so the slots stay independent.
+        const ext=(raw.type.split("/")[1]||"png").replace("jpeg","jpg");
+        const uniqueName=`pasted_${Date.now()}_${Math.floor(Math.random()*1e4)}.${ext}`;
+        let file;
+        try{ file=new File([raw],uniqueName,{type:raw.type}); }
+        catch(_){ file=raw; file.name=uniqueName; } // fallback for older browsers
+        // If the Sketch canvas is open, paste the image as a new layer instead.
+        if(_sketchOv&&_sketchOv.style.display!=="none"){
+          _sketchAddImageLayer(file);
+          return;
+        }
+        // If the mask (inpaint/outpaint) editor is open: inpaint pastes into the reference
+        // slot (the main image is already loaded, so a paste can only mean the reference);
+        // outpaint has no image target, so ignore paste there.
+        if(_maskOpen){
+          if(_maskMode==="inpaint"&&_refSlot) _refSlot.loadFile(file);
+          return;
+        }
+        // Pick target slot based on active pill and slot state
+        let targetSlot=null;
+        if(activePill==="edit"){
+          targetSlot=!img1Slot.hasFile()?img1Slot:img2Slot;
+        } else if(activePill==="i2i"){
+          targetSlot=i2iSlot;
+        } else if(activePill==="inpaint"){
+          targetSlot=_paintSlot;
+        } else if(activePill==="faceswap"){
+          targetSlot=!_fsTargetSlot.hasFile()?_fsTargetSlot:_fsSourceSlot;
+        } else if(activePill==="pose"){
+          targetSlot=!_poseImgSlot.hasFile()?_poseImgSlot:_poseRefSlot;
+        } else if(activePill==="upscale"){
+          targetSlot=_upSlot;
+        }
+        if(targetSlot) targetSlot.loadFile(file);
+      },{capture:true});
 
       // Fetch models
       const _loadModels=()=>api.fetchApi("/flux_klein/models")
@@ -9055,23 +11907,85 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             if(fsMatch&&fsMatch!=="none"){fsLoraF.dd.set(fsMatch);S.fsLora=fsMatch;}
             else{fsLoraF.dd.set("none");S.fsLora="";}
           } else{fsLoraF.dd.set("none");S.fsLora="";}
+          // Pose LoRA dropdown — same basename matching (handles subfolders)
+          const _matchLora=(want)=>{
+            if(!loraList.length) return "";
+            const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
+            return loraOpts.find(o=>nd(o)===nd(want))||
+              loraOpts.find(o=>nd(o).split("/").pop()===nd(want).split("/").pop())||"";
+          };
+          poseLoraF.dd.updateItems(loraOpts);
+          { const m=_matchLora(S.poseLora||""); if(m&&m!=="none"){poseLoraF.dd.set(m);S.poseLora=m;} else{poseLoraF.dd.set("none");S.poseLora="";} }
+          // Upscaler dropdowns — the SeedVR2 model lives in diffusion_models and its VAE in vae,
+          // so they reuse the same scans; keyword auto-select only when nothing is saved yet.
+          {
+            const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
+            const _matchIn=(list,want)=>{
+              if(!want||!list.length) return "";
+              return list.find(o=>nd(o)===nd(want))||
+                list.find(o=>nd(o).split("/").pop()===nd(want).split("/").pop())||"";
+            };
+            const upModelOpts=["none",...modelList];
+            upModelF.dd.updateItems(upModelOpts);
+            const upM=_matchIn(modelList,S.upscaleModel)||
+              (S.upscaleModel?"":(modelList.find(f=>nd(f).includes("seedvr"))||""));
+            if(upM){ upModelF.dd.set(upM); S.upscaleModel=upM; } else { upModelF.dd.set("none"); S.upscaleModel=""; }
+
+            const upVaeOpts=["none",...vaeList];
+            upVaeF.dd.updateItems(upVaeOpts);
+            const upV=_matchIn(vaeList,S.upscaleVae)||
+              (S.upscaleVae?"":(vaeList.find(f=>nd(f).includes("ema_vae"))||""));
+            if(upV){ upVaeF.dd.set(upV); S.upscaleVae=upV; } else { upVaeF.dd.set("none"); S.upscaleVae=""; }
+          }
           persist();
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
       _loadModels();
-      if(S.extLoaders) _applyExtLoaders(true);
+      // IMPORTANT: this runs from onNodeCreated, which fires BEFORE LiteGraph restores
+      // the node's saved inputs/links on a page reload. If we add the ext-loader slots
+      // synchronously here, they collide with the slots LiteGraph is about to restore,
+      // and the GGUF wire can end up detached — so at generation time _extSlot() sees no
+      // link and silently falls back to the dropdown model (the bug reported on reload).
+      // Defer to the next frame so the graph is fully configured first, then sync.
+      const _initExtLoaders=()=>{
+        if(S.extLoaders){
+          _applyExtLoaders(true);   // adds only missing slots; keeps restored ones + links
+        } else {
+          // Toggle off, but a GGUF wire may have been kept connected (restored by
+          // LiteGraph from the saved workflow). Resize to fit whatever slots exist.
+          _fkResizeToFit();
+        }
+        _refreshExtInputUI();
+      };
+      requestAnimationFrame(_initExtLoaders);
 
-      // Auto-refresh Settings dropdowns when connections change
-      self.onConnectionsChange=function(){ _refreshExtInputUI(); };
+      // Auto-refresh Settings dropdowns when connections change. Also re-evaluate the gallery
+      // lightbox's "Set as output" button live if the lightbox is open, so wiring/unwiring the
+      // node's image output enables/disables it immediately (no reopen needed).
+      self.onConnectionsChange=function(){
+        _refreshExtInputUI();
+        if(lightbox.style.display!=="none") _lbRefreshSetOut();
+      };
 
 
 
-      const _slotHInit=(self.inputs||[]).length*(LiteGraph.NODE_SLOT_HEIGHT||20);
+      // computeSize must match setSize/onResize exactly: NODE_H for the UI plus the
+      // slot rows LiteGraph stacks (whichever side — inputs or outputs — has more).
+      // The bug was that this only counted inputs, so the always-present prompt input
+      // and the image output weren't accounted for and the UI overflowed the bottom.
       this.addDOMWidget("fk_ui","div",root,{
         getValue(){return null;},setValue(){},serialize:false,
-        computeSize(){const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);const n=(self.inputs||[]).length;return[NODE_W,NODE_H+n*slotH];},
+        // canvasOnly (classic mode only): keeps this huge UI widget on the graph canvas so the
+        // Parameters side-panel can't steal it (collapsing-right-panel bug). In Nodes 2.0 the
+        // Vue renderer skips canvasOnly widgets → blank node, so we must NOT set it there.
+        canvasOnly:!_isVueNodes(),
+        computeSize(){
+          const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
+          const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
+          return [NODE_W,NODE_H+rows*slotH];
+        },
       });
-      this.setSize([NODE_W,NODE_H+_slotHInit]);
+      _fkResizeToFit(this);
 
       // Nodes 2.0: hide the auto-injected node-type name badge rendered in the node footer.
       // The badge has class "bg-node-component-surface" (Tailwind) and contains the node type string.
@@ -9095,17 +12009,51 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
       });
 
+      // triggerGenerate: a chain poke clicks Generate, which reads the wired prompt input
+      // fresh. Guarded so a poke is ignored while already generating (no double runs).
+      // Defined BEFORE the cache object below, which stores it for the cached-branch
+      // re-registration on workflow switch (const → temporal dead zone if referenced earlier).
+      const _fkTriggerGenerate=()=>{ if(!S.generating) genBtn.click(); };
+
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
       window.__fluxklein_nodes[this.id]={
-        root,S,
-        fns:{showFinal,showPreview,resetBtn,setStage,showError,clearError,getPromptId:()=>_activePromptId},
+        root,S,currentNode:this, // currentNode is repointed on workflow-switch reuse; _liveId() reads it
+        fns:{showFinal,showFinalBatch,showTemp,showPreview,resetBtn,setStage,showError,clearError,poseSkeleton,autoSend,getPromptId:()=>_activePromptId,triggerGenerate:_fkTriggerGenerate},
       };
+      _curCacheKey=this.id;
+
+      // Track this node instance (cleaned up in onRemoved).
+      _fkNodes[this.id]={};
+
+      // Register in the One Node family bus so an upstream One Node (e.g. Gemma) can
+      // chain-trigger this node's generation.
+      // NOTE: onNodeCreated runs while the node still has the placeholder id -1; LiteGraph
+      // assigns the real graph id a moment later. Register on the next frame so we key by
+      // the real id (otherwise a chain poke can't find this node — the bug seen here).
+      let _fkFamilyId=null;
+      let _fkFamilyApi=null;
+      const _fkRegisterFamily=()=>{
+        const id=self.id;
+        if(_fkFamilyId!=null && _fkFamilyId!==id) _oneNodeUnregister(_fkFamilyId,_fkFamilyApi); // drop stale -1 key (only if still ours)
+        _fkFamilyId=id;
+        _fkFamilyApi={ kind:"flux", triggerGenerate:_fkTriggerGenerate };
+        _oneNodeRegister(id,_fkFamilyApi);
+      };
+      _fkRegisterFamily();
+      requestAnimationFrame(_fkRegisterFamily);
+      // Expose for onRemoved so it can unregister only if this exact instance still owns the id.
+      this._fkFamilyApiRef=()=>_fkFamilyApi;
+
       _activeS=S;
       _activeShowFinal=showFinal;
+      _activeShowFinalBatch=showFinalBatch;
+      _activeShowTemp=showTemp;
+      _activeAutoSend=autoSend;
       _activeShowPreview=showPreview;
       _activeResetBtn=resetBtn;
       _activeSetStage=setStage;
       _activeShowError=showError;
+      _activePoseSkeleton=poseSkeleton;
       _activePromptIdRef=()=>_activePromptId;
     };
   },

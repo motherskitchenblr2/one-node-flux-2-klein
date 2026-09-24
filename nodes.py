@@ -2,6 +2,7 @@
 import json
 import glob
 import time
+import uuid
 import subprocess
 import shutil
 from pathlib import Path
@@ -12,6 +13,10 @@ from server import PromptServer
 NODE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(NODE_DIR, 'config.json')
 SUBFOLDER = "one-node-flux-2-klein"
+
+# User config lives outside the node folder so it survives reinstalls / git pull.
+USER_CONFIG_DIR = os.path.join(folder_paths.get_user_directory(), "default", SUBFOLDER)
+USER_CONFIG_PATH = os.path.join(USER_CONFIG_DIR, "config.json")
 
 
 def _favorites_path():
@@ -101,7 +106,8 @@ def _file_key(filename, subfolder=""):
     return f"{subfolder}/{filename}" if subfolder else filename
 
 
-def _load_config():
+def _load_builtin_config():
+    """Read-only defaults shipped with the node. Never written to."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -109,9 +115,91 @@ def _load_config():
         return {}
 
 
-def _save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+def _load_user_config():
+    """User edits, stored outside the node folder so they survive reinstalls."""
+    try:
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _merge_discover(builtin, user):
+    """Deep-merge discover_prompts so users see BOTH new built-in presets and
+    their own. Built-in items first; user items appended/override by label."""
+    out = json.loads(json.dumps(builtin or {}))  # deep copy
+    for pill, udata in (user or {}).items():
+        if not isinstance(udata, dict) or "categories" not in udata:
+            out[pill] = udata
+            continue
+        bcats = (out.get(pill) or {}).get("categories", [])
+        by_cat = {c.get("cat"): c for c in bcats}
+        for ucat in udata.get("categories", []):
+            name = ucat.get("cat")
+            if name in by_cat:
+                items = by_cat[name].setdefault("items", [])
+                labels = {it.get("label") for it in items}
+                for uit in ucat.get("items", []):
+                    if uit.get("label") in labels:
+                        for i, it in enumerate(items):
+                            if it.get("label") == uit.get("label"):
+                                items[i] = uit
+                                break
+                    else:
+                        items.append(uit)
+            else:
+                bcats.append(ucat)
+        out.setdefault(pill, {})["categories"] = bcats
+    return out
+
+
+def _load_config():
+    builtin = _load_builtin_config()
+    user = _load_user_config()
+    merged = dict(builtin)
+    merged.update(user)  # user wins for simple keys
+    # discover_prompts gets a deep merge so new built-in presets stay visible
+    merged["discover_prompts"] = _merge_discover(
+        builtin.get("discover_prompts"), user.get("discover_prompts")
+    )
+    return merged
+
+
+def _diff_discover(builtin, incoming):
+    """Return only user-added/changed discover items, so the user file does not
+    freeze a copy of the built-ins (which would hide future built-in presets)."""
+    diff = {}
+    for pill, idata in (incoming or {}).items():
+        if not isinstance(idata, dict) or "categories" not in idata:
+            diff[pill] = idata
+            continue
+        bcats = {c.get("cat"): {it.get("label"): it for it in c.get("items", [])}
+                 for c in (builtin.get(pill) or {}).get("categories", [])}
+        out_cats = []
+        for icat in idata.get("categories", []):
+            name = icat.get("cat")
+            bitems = bcats.get(name, {})
+            new_items = [it for it in icat.get("items", [])
+                         if bitems.get(it.get("label")) != it]
+            if name not in bcats or new_items:
+                out_cats.append({"cat": name, "items": new_items})
+        if out_cats:
+            diff[pill] = {"categories": out_cats}
+    return diff
+
+
+def _save_config(patch):
+    """Write user edits to the user folder only. Repo config.json is never touched."""
+    user = _load_user_config()
+    builtin = _load_builtin_config()
+    for k, v in patch.items():
+        if k == "discover_prompts":
+            user[k] = _diff_discover(builtin.get("discover_prompts", {}), v)
+        else:
+            user[k] = v
+    os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(user, f, ensure_ascii=False, indent=2)
 
 
 def _get_output_dir():
@@ -399,6 +487,8 @@ PromptServer.instance.routes.get("/flux_klein/workflow_edit")(_serve_json("workf
 PromptServer.instance.routes.get("/flux_klein/workflow_inpaint")(_serve_json("workflows/inpaint_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_outpaint")(_serve_json("workflows/outpaint_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_faceswap")(_serve_json("workflows/faceswap_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_pose")(_serve_json("workflows/pose_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_upscale")(_serve_json("workflows/upscale_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_remove_bg")(_serve_json("workflows/remove_bg_workflow.json"))
 
 
@@ -450,9 +540,7 @@ async def save_config_route(request):
         patch = await request.json()
         if not isinstance(patch, dict):
             return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
-        cfg = _load_config()
-        cfg.update({k: v for k, v in patch.items()})
-        _save_config(cfg)
+        _save_config(patch)
         return web.json_response({"ok": True})
     except Exception as e:
         print(f"[FluxKlein] config save error: {e}")
@@ -540,6 +628,89 @@ async def save_meta(request):
     except Exception as e:
         print(f"[FluxKlein] save_meta error: {e}")
         return web.json_response({"ok": False, "error": str(e)})
+
+
+@PromptServer.instance.routes.post("/flux_klein/save_temp")
+async def save_temp(request):
+    """Move a temp (PreviewImage) result into the gallery output folder and write
+    its metadata. Used when auto-save is off and the user clicks Save on a result."""
+    try:
+        data = await request.json()
+        temp_filename = data.get("filename", "")
+        temp_subfolder = data.get("subfolder", "")
+        meta = data.get("meta", {})
+        if not temp_filename:
+            return web.json_response({"ok": False, "error": "no filename"})
+
+        # Resolve the source temp file safely inside the temp directory.
+        temp_base = Path(folder_paths.get_temp_directory()).resolve()
+        src = (temp_base / temp_subfolder / temp_filename).resolve()
+        try:
+            src.relative_to(temp_base)
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid temp path"}, status=400)
+        if not src.exists():
+            return web.json_response({"ok": False, "error": f"temp not found: {temp_filename}"})
+
+        # Destination: output/one-node-flux-2-klein/<unique f2k name>.png
+        output_dir = _get_output_dir()
+        dest_dir = os.path.join(output_dir, SUBFOLDER)
+        os.makedirs(dest_dir, exist_ok=True)
+        # Build a unique f2k_NNNNN_.png name so it matches the SaveImage convention.
+        idx = 1
+        existing = glob.glob(os.path.join(dest_dir, "f2k_*_.png"))
+        for f in existing:
+            m = os.path.basename(f)
+            try:
+                n = int(m.split("_")[1])
+                if n >= idx:
+                    idx = n + 1
+            except Exception:
+                pass
+        dest_name = f"f2k_{idx:05d}_.png"
+        dest_path = os.path.join(dest_dir, dest_name)
+        while os.path.exists(dest_path):
+            idx += 1
+            dest_name = f"f2k_{idx:05d}_.png"
+            dest_path = os.path.join(dest_dir, dest_name)
+
+        shutil.copy2(str(src), dest_path)
+        if meta:
+            _write_json_meta(dest_path, meta)
+        return web.json_response({"ok": True, "filename": dest_name, "subfolder": SUBFOLDER})
+    except Exception as e:
+        print(f"[FluxKlein] save_temp error: {e}")
+        return web.json_response({"ok": False, "error": str(e)})
+
+
+@PromptServer.instance.routes.post("/flux_klein/stage_input")
+async def stage_input(request):
+    """Copy an existing result (output or temp) into the ComfyUI input folder so a
+    workflow's LoadImage can read it. Used by quick-upscale, which re-feeds the image
+    currently shown in the preview back into the upscale workflow.
+    Returns the input-folder filename to put into LoadImage."""
+    try:
+        data = await request.json()
+        filename = data.get("filename", "")
+        subfolder = data.get("subfolder", "") or ""
+        ftype = data.get("type", "output") or "output"
+        if not filename:
+            return web.json_response({"ok": False, "error": "no filename"}, status=400)
+
+        src = _resolve_image_file(filename, subfolder, ftype)
+        if not src:
+            return web.json_response({"ok": False, "error": f"not found: {filename}"}, status=404)
+
+        input_dir = Path(folder_paths.get_input_directory()).resolve()
+        os.makedirs(str(input_dir), exist_ok=True)
+        ext = os.path.splitext(filename)[1] or ".png"
+        dest_name = f"fk_upscale_src_{uuid.uuid4().hex[:10]}{ext}"
+        dest_path = input_dir / dest_name
+        shutil.copy2(str(src), str(dest_path))
+        return web.json_response({"ok": True, "name": dest_name})
+    except Exception as e:
+        print(f"[FluxKlein] stage_input error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 @PromptServer.instance.routes.post("/flux_klein/update_meta")
@@ -656,7 +827,8 @@ def _scan(folder_key, extensions=None):
     for base in bases:
         if not os.path.isdir(base):
             continue
-        for root, _, files in os.walk(base):
+        # followlinks=True so symlinked LoRA folders (e.g. on another drive) are scanned
+        for root, _, files in os.walk(base, followlinks=True):
             for fn in files:
                 if any(fn.lower().endswith(e) for e in exts):
                     found.append(os.path.relpath(os.path.join(root, fn), base))
@@ -668,7 +840,8 @@ def _scan_path(path, extensions=None):
     if not os.path.isdir(path):
         return ["none"]
     found = []
-    for root, _, files in os.walk(path):
+    # followlinks=True so symlinked folders (e.g. on another drive) are scanned
+    for root, _, files in os.walk(path, followlinks=True):
         for fn in files:
             if any(fn.lower().endswith(e) for e in exts):
                 found.append(os.path.relpath(os.path.join(root, fn), path))
@@ -813,17 +986,105 @@ async def lora_triggers(request):
     return web.json_response({"ok": False, "error": "file not found", "triggers": []})
 
 
+# Stores the currently-shown output image per node instance (keyed by the node's
+# graph id). JS posts here after every generation and whenever the user clicks
+# through a batch, so noop() can hand the visible image to downstream nodes on the
+# next graph run. Value: {"filename","subfolder","type"} or None.
+_last_output_by_node = {}
+
+
+def _resolve_image_file(filename, subfolder="", ftype="output"):
+    """Safely resolve a generated image to an absolute path. Handles the output
+    folder and ComfyUI's temp folder (used for unsaved auto-save-off results)."""
+    if not filename:
+        return None
+    if ftype == "temp":
+        base = Path(folder_paths.get_temp_directory()).resolve()
+    elif ftype == "input":
+        base = Path(folder_paths.get_input_directory()).resolve()
+    else:
+        base = Path(_get_output_dir()).resolve()
+    target = base
+    if subfolder:
+        target = target / subfolder
+    target = (target / filename).resolve()
+    try:
+        target.relative_to(base)  # path-traversal guard
+    except Exception:
+        return None
+    return str(target) if os.path.isfile(target) else None
+
+
+@PromptServer.instance.routes.post("/flux_klein/set_output")
+async def set_output(request):
+    try:
+        data = await request.json()
+        node_id = str(data.get("node_id", ""))
+        if not node_id:
+            return web.json_response({"ok": False, "error": "no node_id"}, status=400)
+        fn = data.get("filename")
+        if fn:
+            _last_output_by_node[node_id] = {
+                "filename": fn,
+                "subfolder": data.get("subfolder", "") or "",
+                "type": data.get("type", "output") or "output",
+            }
+        else:
+            _last_output_by_node.pop(node_id, None)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+def _empty_image_tensor():
+    import torch
+    return torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+
+
+def _load_image_tensor(info):
+    """Load a stored output image into a ComfyUI IMAGE tensor [1,H,W,3] float32."""
+    try:
+        import torch
+        import numpy as np
+        from PIL import Image, ImageOps
+    except Exception:
+        return _empty_image_tensor()
+    if not info:
+        return _empty_image_tensor()
+    path = _resolve_image_file(info.get("filename", ""), info.get("subfolder", ""), info.get("type", "output"))
+    if not path:
+        return _empty_image_tensor()
+    try:
+        img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        arr = np.array(img).astype(np.float32) / 255.0
+        return torch.from_numpy(arr)[None, ]
+    except Exception:
+        return _empty_image_tensor()
+
+
 class FluxKleinOneNode:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}, "hidden": {"unique_id": "UNIQUE_ID"}}
-    RETURN_TYPES = ()
+        # `prompt` is an optional STRING input; when connected, JS reads its value at
+        # generate time and uses it in place of the prompt box (per mode).
+        return {
+            "required": {},
+            "optional": {"prompt": ("STRING", {"forceInput": True})},
+            "hidden": {"unique_id": "UNIQUE_ID"},
+        }
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
     FUNCTION = "noop"
     CATEGORY = "One Node"
     OUTPUT_NODE = True
 
-    def noop(self, **kwargs):
-        return {}
+    def noop(self, unique_id=None, **kwargs):
+        # Return the image currently shown in this node's preview (set by JS via
+        # POST /flux_klein/set_output after each generation / batch step).
+        info = _last_output_by_node.get(str(unique_id))
+        return {"result": (_load_image_tensor(info),)}
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
